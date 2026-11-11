@@ -1,0 +1,62 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "nestjs-cloudflare-example",
+  "main": "../dist-example/example/index.js",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "build": {
+    "command": "yarn build:example",
+    "cwd": ".",
+  },
+  "vars": {
+    "CRON_SCHEDULE": "*/15 * * * *",
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"],
+  },
+  "kv_namespaces": [
+    {
+      "binding": "STATE",
+      "id": "00000000000000000000000000000000",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "NOTIFICATIONS",
+        "queue": "notifications",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "notifications",
+      },
+    ],
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GREETER",
+        "class_name": "Greeter",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Greeter"],
+    },
+  ],
+  "alias": {
+    "class-validator": "./unsupported-dependency.ts",
+    "class-transformer": "./unsupported-dependency.ts",
+    "@nestjs/websockets/socket-module.js": "./unsupported-dependency.ts",
+    "kafkajs": "./unsupported-dependency.ts",
+    "mqtt": "./unsupported-dependency.ts",
+    "@nats-io/transport-node": "./unsupported-dependency.ts",
+    "ioredis": "./unsupported-dependency.ts",
+    "amqplib": "./unsupported-dependency.ts",
+    "amqp-connection-manager": "./unsupported-dependency.ts",
+    "@grpc/grpc-js": "./unsupported-dependency.ts",
+  },
+}

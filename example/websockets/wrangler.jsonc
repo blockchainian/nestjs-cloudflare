@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "nestjs-cloudflare-websockets",
+  "main": "../../dist-example/example/websockets/index.js",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "build": { "command": "yarn build:example", "cwd": "." },
+  "durable_objects": {
+    "bindings": [{ "name": "CHAT", "class_name": "ChatRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatRoom"] }],
+  "alias": {
+    "class-validator": "../unsupported-dependency.ts",
+    "class-transformer": "../unsupported-dependency.ts",
+    "@nestjs/platform-socket.io": "../unsupported-dependency.ts",
+    "kafkajs": "../unsupported-dependency.ts",
+    "mqtt": "../unsupported-dependency.ts",
+    "@nats-io/transport-node": "../unsupported-dependency.ts",
+    "ioredis": "../unsupported-dependency.ts",
+    "amqplib": "../unsupported-dependency.ts",
+    "amqp-connection-manager": "../unsupported-dependency.ts",
+    "@grpc/grpc-js": "../unsupported-dependency.ts",
+  },
+}
