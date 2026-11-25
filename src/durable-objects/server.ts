@@ -1,6 +1,7 @@
 import {
   type CustomTransportStrategy,
   type MsPattern,
+  type PacketId,
   type ReadPacket,
   Server,
   type WritePacket,
@@ -11,6 +12,8 @@ import { CLOUDFLARE_DURABLE_OBJECT_TRANSPORT } from './constants.js';
 import { attachDurableObjectContext } from './context.js';
 import { CloudflareDurableObjectContext } from './context.transport.js';
 import type { CloudflareDurableObjectServerOptions } from './interfaces/server-options.interface.js';
+
+type IncomingPacket = ReadPacket & Partial<PacketId>;
 
 /** Dispatches native object messages through Nest microservice handlers. */
 export class CloudflareDurableObjectServer
@@ -45,18 +48,21 @@ export class CloudflareDurableObjectServer
     state: DurableObjectState,
     env: unknown,
   ): Promise<WritePacket[]> {
-    const packet = await this.deserializer.deserialize(raw);
-    const pattern = this.normalizePattern(packet.pattern);
-    const context = new CloudflareDurableObjectContext([state, env, pattern]);
+    const { packet, pattern, context } = await this.prepare(
+      this.deserializer.deserialize(raw),
+      state,
+      env,
+    );
 
-    attachDurableObjectContext(context, state);
     const handler = this.getHandlerByPattern(pattern);
 
     if (!handler) {
       return [{ err: `No handler for pattern: ${pattern}`, isDisposed: true }];
     }
 
-    if (!('id' in packet) || packet.id === undefined) {
+    const id = packet.id;
+
+    if (id === undefined) {
       try {
         await this.handleEvent(pattern, packet, context);
 
@@ -85,9 +91,7 @@ export class CloudflareDurableObjectServer
             this.transformToObservable(result).pipe(finalize(end)),
             async reply => {
               try {
-                replies.push(
-                  await this.serializer.serialize({ ...reply, id: packet.id }),
-                );
+                replies.push(await this.serializer.serialize({ ...reply, id }));
 
                 if (reply.isDisposed) {
                   resolve(replies);
@@ -134,15 +138,26 @@ export class CloudflareDurableObjectServer
     state: DurableObjectState,
     env: unknown,
   ): Promise<void> {
-    const normalized = this.normalizePattern(pattern);
-
-    const context = new CloudflareDurableObjectContext([
+    const { pattern: normalized, context } = await this.prepare(
+      { pattern, data: undefined },
       state,
       env,
-      normalized,
-    ]);
+    );
+
+    await this.handleEvent(normalized, { pattern, data: undefined }, context);
+  }
+
+  private async prepare(
+    incoming: IncomingPacket | Promise<IncomingPacket>,
+    state: DurableObjectState,
+    env: unknown,
+  ) {
+    const packet = await incoming;
+    const pattern = this.normalizePattern(packet.pattern);
+    const context = new CloudflareDurableObjectContext([state, env, pattern]);
 
     attachDurableObjectContext(context, state);
-    await this.handleEvent(normalized, { pattern, data: undefined }, context);
+
+    return { packet, pattern, context };
   }
 }

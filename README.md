@@ -462,6 +462,8 @@ export class JobLease extends CloudflareDurableObject<Env> {
 
 Export the class from the Worker entry point and register it in Wrangler's Durable Object bindings and migrations. This transport uses native Workers RPC and requires a compatibility date of `2024-04-03` or later. It does not expose an HTTP URL. Each message carries Nest's pattern and data to the object's `dispatch` RPC method.
 
+Each object resolves its transport controllers once before dispatching RPC calls or alarms, so cold and warm objects start handlers in arrival order when deserialization, guards, pipes, and interceptors take the same time for each call. Handler awaits can still interleave; custom asynchronous deserializers, guards, pipes, or interceptors with unequal delays can change the start order.
+
 To combine this transport with gateways, use either WebSocket base class with the same initialized application and transport server:
 
 ```ts

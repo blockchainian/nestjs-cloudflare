@@ -28,6 +28,8 @@ import {
 class RoomSockets {
   readonly id = crypto.randomUUID();
   readonly sockets = new Set<WebSocket>();
+  readonly starts: number[] = [];
+  release: (() => void) | undefined;
 
   constructor(
     @Inject(REQUEST) private readonly owner: { ctx: DurableObjectState },
@@ -68,6 +70,25 @@ class RoomController {
     private readonly request: CloudflareRequestContext,
   ) {}
 
+  @MessagePattern('start-order')
+  startOrder(@Payload() sequence: number) {
+    this.room.starts.push(sequence);
+    this.room.release?.();
+
+    return [...this.room.starts];
+  }
+
+  @MessagePattern('hold')
+  async hold() {
+    this.room.starts.push(1);
+
+    await new Promise<void>(resolve => {
+      this.room.release = resolve;
+    });
+
+    return [...this.room.starts];
+  }
+
   @MessagePattern('push')
   push(@Payload() data: string) {
     return this.room.push(data);
@@ -75,6 +96,8 @@ class RoomController {
 
   @EventPattern('room-alarm')
   async alarm(@Ctx() context: CloudflareDurableObjectContext) {
+    this.room.starts.push(0);
+
     this.request
       .getExecutionContext()
       .waitUntil(context.getState().storage.put('background', true));
