@@ -20,6 +20,8 @@ import { CloudflareModule, CloudflareRequestContext } from '../../src/index.js';
 @Injectable({ scope: Scope.REQUEST, durable: true })
 class ObjectService {
   readonly id = crypto.randomUUID();
+  readonly starts: number[] = [];
+  release: (() => void) | undefined;
 }
 
 @Controller()
@@ -28,6 +30,25 @@ class ObjectController {
     private readonly object: ObjectService,
     private readonly request: CloudflareRequestContext,
   ) {}
+
+  @MessagePattern('start-order')
+  startOrder(@Payload() sequence: number) {
+    this.object.starts.push(sequence);
+    this.object.release?.();
+
+    return [...this.object.starts];
+  }
+
+  @MessagePattern('hold')
+  async hold() {
+    this.object.starts.push(1);
+
+    await new Promise<void>(resolve => {
+      this.object.release = resolve;
+    });
+
+    return [...this.object.starts];
+  }
 
   @MessagePattern('increment')
   async increment(
@@ -80,6 +101,8 @@ class ObjectController {
 
   @EventPattern('alarm')
   async alarm(@Ctx() context: CloudflareDurableObjectContext) {
+    this.object.starts.push(0);
+
     this.request
       .getExecutionContext()
       .waitUntil(context.getState().storage.put('alarm-background', true));

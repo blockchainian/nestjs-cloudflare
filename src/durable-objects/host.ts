@@ -4,6 +4,7 @@ import { DurableObject } from 'cloudflare:workers';
 
 import { CloudflareRequestContext } from '../worker/request-context.js';
 import type { CloudflareDurableObjectOptions } from './interfaces/server-options.interface.js';
+import { initializeTransportControllers } from './transport-initialization.js';
 
 interface HostOptions {
   getApplication: () => Promise<INestApplicationContext>;
@@ -14,6 +15,8 @@ interface HostOptions {
 export abstract class CloudflareDurableObjectHost<
   Env = Cloudflare.Env,
 > extends DurableObject<Env> {
+  private transportApplication: Promise<INestApplicationContext> | undefined;
+
   constructor(
     state: DurableObjectState,
     env: Env,
@@ -50,8 +53,22 @@ export abstract class CloudflareDurableObjectHost<
     );
   }
 
-  private async run<T>(callback: () => Promise<T>): Promise<T> {
+  private async initialize(): Promise<INestApplicationContext> {
     const app = await this.hostOptions.getApplication();
+    const context = app.get(CloudflareRequestContext);
+    const transport = this.hostOptions.transport;
+
+    if (transport) {
+      await context.run({ env: this.env, ctx: this.ctx }, () =>
+        initializeTransportControllers(app, transport.server, this.ctx),
+      );
+    }
+
+    return app;
+  }
+
+  private async run<T>(callback: () => Promise<T>): Promise<T> {
+    const app = await (this.transportApplication ??= this.initialize());
     const context = app.get(CloudflareRequestContext);
 
     return context.run({ env: this.env, ctx: this.ctx }, callback);

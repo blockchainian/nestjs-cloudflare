@@ -13,6 +13,7 @@ import {
   CloudflareDurableObjectClient,
   CloudflareDurableObjectRecordBuilder,
 } from '../../src/durable-objects/index.js';
+import { dispatch } from '../fixtures/transport-request.js';
 import type {
   ActiveTransportRoom,
   HibernatingTransportRoom,
@@ -81,6 +82,93 @@ describe.each(hosts)(
   '$name gateway transport in workerd',
   ({ binding, hibernate }) => {
     const namespace = env[binding] as DurableObjectNamespace<Room>;
+
+    it.each(['cold', 'warm'])(
+      'starts %s transport handlers in arrival order',
+      async temperature => {
+        const stub = namespace.getByName(crypto.randomUUID());
+
+        if (temperature === 'warm') {
+          await dispatch(stub, 'warmup', 'push', 'warmup');
+        }
+
+        const replies = await Promise.all([
+          dispatch(stub, 'first', 'start-order', 1),
+          dispatch(stub, 'second', 'start-order', 2),
+        ]);
+
+        expect(replies[0][0].response).toEqual([1]);
+        expect(replies[1][0].response).toEqual([1, 2]);
+      },
+    );
+
+    it('allows the next transport handler to start while the first awaits', async () => {
+      const stub = namespace.getByName(crypto.randomUUID());
+
+      const replies = await Promise.all([
+        dispatch(stub, 'first', 'hold', null),
+        dispatch(stub, 'second', 'start-order', 2),
+      ]);
+
+      expect(replies[0][0].response).toEqual([1, 2]);
+      expect(replies[1][0].response).toEqual([1, 2]);
+    });
+
+    it('initializes cold alarm and RPC handlers together in arrival order', async () => {
+      await runInDurableObject(
+        namespace.getByName(crypto.randomUUID()),
+        async object => {
+          const [, replies] = await Promise.all([
+            object.alarm(),
+            dispatch(object, 'next', 'start-order', 1),
+          ]);
+
+          expect(replies[0].response).toEqual([0, 1]);
+        },
+      );
+    });
+
+    it.each(['cold', 'warm'])(
+      'starts an earlier RPC handler before a %s alarm handler',
+      async temperature => {
+        await runInDurableObject(
+          namespace.getByName(crypto.randomUUID()),
+          async object => {
+            if (temperature === 'warm') {
+              await dispatch(object, 'warmup', 'push', 'warmup');
+            }
+
+            const [replies] = await Promise.all([
+              dispatch(object, 'first', 'start-order', 1),
+              object.alarm(),
+            ]);
+
+            expect(replies[0].response).toEqual([1]);
+          },
+        );
+      },
+    );
+
+    it('preserves transport start order with connected sockets after wakeup', async () => {
+      const name = crypto.randomUUID();
+      const { socket, stub } = await connect(namespace, name);
+
+      try {
+        if (hibernate) {
+          await evictDurableObject(stub, { webSockets: 'hibernate' });
+        }
+
+        const replies = await Promise.all([
+          dispatch(stub, 'first', 'start-order', 1),
+          dispatch(stub, 'second', 'start-order', 2),
+        ]);
+
+        expect(replies[0][0].response).toEqual([1]);
+        expect(replies[1][0].response).toEqual([1, 2]);
+      } finally {
+        socket.close();
+      }
+    });
 
     it('pushes ClientProxy.send data to the owning gateway sockets', async () => {
       const first = await connect(namespace, 'push');
