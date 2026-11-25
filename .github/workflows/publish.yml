@@ -1,0 +1,75 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check whether the version is published
+        id: version
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+
+          const { name, version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
+          if (response.status !== 200 && response.status !== 404) {
+            throw new Error(`Registry lookup failed: HTTP ${response.status}`);
+          }
+          const published = response.status === 200;
+          appendFileSync(process.env.GITHUB_OUTPUT, `published=${published}\n`);
+          console.log(published ? `${name}@${version} is already published; skipping.` : `${name}@${version} will be published.`);
+          NODE
+
+      - name: Ensure npm supports trusted publishing
+        if: steps.version.outputs.published == 'false'
+        run: |
+          if ! node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const [major, minor, patch] = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim().split('.').map(Number);
+          const supported = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+          process.exit(supported ? 0 : 1);
+          NODE
+          then
+            npm install --global npm@11.5.1
+          fi
+          npm --version
+
+      - name: Install dependencies
+        if: steps.version.outputs.published == 'false'
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        if: steps.version.outputs.published == 'false'
+        run: yarn lint
+
+      - name: Check types
+        if: steps.version.outputs.published == 'false'
+        run: yarn test:types
+
+      - name: Test
+        if: steps.version.outputs.published == 'false'
+        run: yarn test
+
+      - name: Publish to npm
+        if: steps.version.outputs.published == 'false'
+        run: npm publish --access public
