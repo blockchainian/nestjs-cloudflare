@@ -32,19 +32,10 @@ function validateBinding(
   }
 }
 
-/** RPC stubs synthesize callable properties that are not declared methods. */
+/**
+ * Miniflare Node proxies expose callable methods without property descriptors.
+ * RPC stubs can also pass this check; interface mismatches fail when called.
+ */
 function hasBindingMethod(value: object, method: string): boolean {
-  let target: object | null = value;
-
-  while (target !== null) {
-    const descriptor = Object.getOwnPropertyDescriptor(target, method);
-
-    if (descriptor) {
-      return typeof descriptor.value === 'function';
-    }
-
-    target = Object.getPrototypeOf(target);
-  }
-
-  return false;
+  return typeof Reflect.get(value, method) === 'function';
 }

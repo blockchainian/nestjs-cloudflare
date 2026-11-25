@@ -8,12 +8,13 @@ import {
   detachCloudflareWebSocketContext,
 } from './context.js';
 import type { CloudflareWebSocketAdapterOptions } from './interfaces/adapter-options.interface.js';
+import type { CloudflareWebSocketDisconnectReason } from './interfaces/disconnect-event.interface.js';
 import type { CloudflareWebSocketServer } from './interfaces/server.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
 import { WebSocketMessageDispatcher } from './message-dispatcher.js';
 
 type ConnectHandler = (client: WebSocket, request?: Request) => void;
-type DisconnectHandler = (reason?: string) => void;
+type DisconnectHandler = (reason: CloudflareWebSocketDisconnectReason) => void;
 type Transform = (data: unknown) => Observable<unknown>;
 
 interface ClientHandlers {
@@ -213,7 +214,10 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Dispatches disconnection hooks and releases this socket's callbacks.
    */
-  public disconnect(socket: WebSocket, reason?: string): void {
+  public disconnect(
+    socket: WebSocket,
+    reason: CloudflareWebSocketDisconnectReason = undefined,
+  ): void {
     const handlers = this.clients.get(socket);
 
     if (!handlers) {

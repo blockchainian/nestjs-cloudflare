@@ -5,6 +5,7 @@ import {
   resolveForDurableObject,
 } from '../durable-objects/context.js';
 import { CloudflareDurableObjectHost } from '../durable-objects/host.js';
+import { completeWebSocketClose } from './close-handshake.js';
 import type { CloudflareWebSocketContext } from './context.js';
 import type { CloudflareWebSocketGatewayOptions } from './interfaces/gateway-options.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
@@ -92,7 +93,12 @@ export abstract class CloudflareWebSocketGatewayDurableObject<
 
     server.addEventListener('close', event => {
       this.sockets.delete(server);
-      this.options.adapter.disconnect(server, event.reason);
+
+      try {
+        completeWebSocketClose(server, event.code, event.reason);
+      } finally {
+        this.options.adapter.disconnect(server, event.reason);
+      }
     });
 
     server.addEventListener('error', event => {

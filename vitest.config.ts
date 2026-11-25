@@ -1,7 +1,7 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { buildSync } from 'esbuild';
 import { builtinModules } from 'node:module';
-import { defineConfig } from 'vitest/config';
+import { defineConfig, defineProject } from 'vitest/config';
 import { resolve } from 'node:path';
 
 import { handleRawWebSocket } from './test/websockets/raw-socket.js';
@@ -29,11 +29,19 @@ const manualQueueConsumer = buildSync({
   ],
 }).outputFiles[0].text;
 
-export default defineConfig({
+const workerd = defineProject({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './test/wrangler.jsonc' },
       miniflare: {
+        ...(process.env.NCF_MANUAL_CLOSE === '1'
+          ? {
+              compatibilityFlags: [
+                'nodejs_compat',
+                'web_socket_manual_reply_to_close',
+              ],
+            }
+          : {}),
         unsafeDirectSockets: [{ host: '127.0.0.1', port: 0 }],
         serviceBindings: {
           RPC_SERVICE: 'rpc-service',
@@ -84,7 +92,25 @@ export default defineConfig({
     },
   },
   test: {
+    name: 'workerd',
     include: ['test/**/*.spec.ts'],
+    exclude: ['test/**/*.node.spec.ts'],
+    provide: { manualClose: process.env.NCF_MANUAL_CLOSE === '1' },
     setupFiles: ['reflect-metadata'],
+  },
+});
+
+export default defineConfig({
+  test: {
+    projects: [
+      workerd,
+      {
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['test/**/*.node.spec.ts'],
+        },
+      },
+    ],
   },
 });
