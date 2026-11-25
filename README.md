@@ -46,6 +46,54 @@ export default createWorker(bootstrap);
 
 Keep Nest creation inside `bootstrap`. Cloudflare's upload validation runs module initialization without all bindings and disallows I/O and random number generation. Deferring Nest startup to an event avoids those restrictions. Choose HTTP adapters, application options, global guards, pipes, filters, and interceptors in your bootstrap function.
 
+For incremental HTTP migration, pass a native fallback. `fetch` checks the initialized Express route table before dispatch and leaves unmatched request bodies untouched:
+
+```ts
+import { CloudflareRequestContext } from 'nestjs-cloudflare';
+
+const worker = createWorker(bootstrap, {
+  fallback: {
+    async fetch(request, env, ctx) {
+      const app = await worker.getApplication();
+      const error = app.get(CloudflareRequestContext).getRouteError();
+      if (error) return new Response('Invalid route encoding', { status: 400 });
+      return legacyRouter.fetch(request, env, ctx);
+    },
+  },
+  routing: { headImplicitMatch: false },
+});
+
+await worker.matches(request); // true for a configured WebSocket path or Nest route
+```
+
+Configure Express before constructing the Nest adapter so its router uses the
+same settings during pre-matching and dispatch:
+
+```ts
+import express from 'express';
+import { ExpressAdapter } from '@nestjs/platform-express';
+
+async function bootstrap() {
+  const instance = express();
+  instance.set('case sensitive routing', true);
+  instance.set('strict routing', true);
+  return NestFactory.create(AppModule, new ExpressAdapter(instance));
+}
+```
+
+The optional `routing.caseSensitive` and `routing.strict` values validate these
+Express settings. Their aliases are `caseSensitiveRouting` and `strictRouting`.
+A mismatch fails startup with instructions to configure Express before creating
+the adapter. They do not change an existing router. Omit them to use the
+bootstrap settings. The default Express configuration remains case-insensitive
+and accepts trailing slashes.
+
+Set `routing.headImplicitMatch: false` when a `HEAD` request should match only
+an explicitly registered `HEAD` route. Unmatched requests go to `fallback.fetch`.
+The default preserves Express's implicit `GET` handling.
+
+Use `around.fetch`, `around.scheduled`, or `around.queue` to wrap complete event dispatch. Each hook receives the native event values and a `next` function. `CloudflareRequestContext` is a singleton provider exported by `CloudflareModule.forRoot()`; inject it to read `getRequest()`, `getEnv()`, `getExecutionContext()`, and `getRouteError()` from the current event. When Express cannot decode a route parameter, pre-matching sends the request to `fallback.fetch` and `getRouteError()` returns the `URIError`.
+
 ## Bindings
 
 `CloudflareModule.forRoot()` registers global providers for the bindings in `cloudflare:workers`' imported `env`. Import it once in the root module. Bindings are injected directly, including primitive variables.
@@ -111,7 +159,7 @@ Register the service as a provider. Do not import Nest's `ScheduleModule`: Cloud
 
 Expressions must have five fields and match `ScheduledController.cron` exactly. Workers schedules use UTC. Empty and six-field expressions produce startup warnings; six-field values from Nest's `CronExpression` enum cannot match Workers triggers. Every matching method runs. Non-static providers are skipped with a warning.
 
-`disabled` suppresses a handler. `waitForCompletion` skips overlapping invocations within one isolate. Timer-specific options such as `timeZone` do not configure Cloudflare triggers. Scheduled processing is registered with `ctx.waitUntil`; handler failures are reported after `scheduled()` returns. Unmatched events use `fallback.scheduled` when provided and otherwise produce a warning.
+`disabled` suppresses a handler. `waitForCompletion` skips overlapping invocations within one isolate. Timer-specific options such as `timeZone` do not configure Cloudflare triggers. `scheduled()` waits for all matching handlers to finish and rejects with an `AggregateError` if any handler fails. Unmatched events use `fallback.scheduled` when provided and otherwise produce a warning.
 
 ## Queues
 
@@ -163,6 +211,20 @@ class NotificationsService {
 class NotificationsModule {}
 ```
 
+Use `CloudflareQueueRecordBuilder` to attach native `QueueSendOptions`, following Nest's transport record builder convention:
+
+```ts
+import { CloudflareQueueRecordBuilder } from 'nestjs-cloudflare/queue';
+
+const record = new CloudflareQueueRecordBuilder({ id: 'activity' })
+  .setOptions({ delaySeconds: 60, contentType: 'json' })
+  .build();
+
+await firstValueFrom(client.emit('notifications', record));
+```
+
+The default serializer unwraps the record and passes its options to `queue.send`. Options are not included in the message body. A custom serializer replaces the default and must return `{ ...packet, data, options }` to use send options.
+
 For dependency injection into the client factory, use `ClientsModule.registerAsync` with `inject: [getBindingToken<Env>('NOTIFICATIONS')]` and return `{ customClass: CloudflareQueueClient, options: { queue } }`. Client and server options accept Nest serializers and deserializers. `emit` sends the Nest event packet, preserving its pattern and metadata. One Queue can carry multiple patterns. `send` rejects because Cloudflare Queues do not support request-response messaging.
 
 ```ts
@@ -188,7 +250,7 @@ class NotificationsController {
 }
 ```
 
-The context exposes the original message, batch, execution context, and pattern. For messages sent by other producers without a Nest packet, the Queue name is the event pattern. Successful messages are acknowledged automatically by default. Set `noAck: false` and call `context.getMessage().ack()` for manual acknowledgement. Failed handlers request retries in either mode.
+The context exposes the original message, batch, execution context, and pattern. For messages sent by other producers without a Nest packet, the Queue name is the event pattern. Successful messages are acknowledged automatically by default. Set `noAck: false` for manual acknowledgement. A handler can discard an invalid message with `context.getMessage().ack()` or retry a locked message with `context.getMessage().retry({ delaySeconds: 30 })`. Return normally after either call so the handler controls that message's outcome. Failed handlers request retries in either mode.
 
 Batches are sequential by default. Set `concurrency: 'parallel'` on the server to process messages concurrently. Unhandled messages use `fallback.queue` when supplied. Missing transports and unhandled events are reported explicitly. Fallbacks are passed as the second argument to `createWorker`:
 
@@ -270,9 +332,73 @@ export class ChatRoom extends CloudflareWebSocketDurableObject<Env> {
 }
 ```
 
-Register the gateway as an application provider. Route upgrade requests to `env.CHAT.get(id).fetch(request)` and configure the Durable Object binding and migration. Gateways use port `0`, the default. Separate listening ports and Socket.IO namespaces are unsupported.
+Register the gateway as an application provider. Configure the Durable Object binding and migration, then declare native forwarding in `createWorker`:
 
-The base class implements `fetch`, `webSocketMessage`, `webSocketClose`, and `webSocketError`. It accepts connections through `ctx.acceptWebSocket` and waits for Nest startup before dispatching events after hibernation. Restored connections are registered with Nest again, so `handleConnection` can run more than once for a socket. Gateways are application singletons; keep persistent room state in Durable Object storage or socket attachments.
+```ts
+const worker = createWorker<Env>(bootstrap, {
+  websockets: [{ paths: ['/chat'], binding: 'CHAT', object: 'shared-chat' }],
+});
+```
+
+Each entry selects exact URL pathnames, a Durable Object namespace binding from the event's `env`, and an object name. For a shared API object, use `{ paths: ['/ws', '/mobula'], binding: 'API_WEBSOCKET', object: 'api-websocket' }`. These paths must also be configured on the object's gateway host and declared with `@WebSocketGateway({ path })`. Entries are checked in order; the first matching entry wins. Matching is case-sensitive, distinguishes trailing slashes, ignores query strings, and is independent of Express routing settings.
+
+Use `object: request => new URL(request.url).searchParams.get('room') ?? 'default'` to select a name per request. Strings are resolved with the namespace's `idFromName()`. A resolver may instead return a native `DurableObjectId`, such as `object: request => env.CHAT.idFromString(new URL(request.url).searchParams.get('id')!)`.
+
+Forwarding runs inside `around.fetch`, before Express and `fallback.fetch`. The original request, including its URL, headers, and body, goes directly to `namespace.get(id).fetch(request)`. The object's response is returned unchanged, including the WebSocket on a `101` response. Matching non-upgrade requests also go to the object: both gateway hosts return `426` by default, and `CloudflareWebSocketGatewayDurableObject` subclasses can override `nonWebSocketFetch`. `worker.matches(request)` returns `true` for configured paths regardless of method or upgrade headers, without starting Nest or calling the object resolver. Unmatched paths retain the usual Nest and fallback behavior.
+
+`CloudflareWebSocketAdapter` accepts `maxConcurrentMessages`, matching Nest's `@nestjs/platform-ws` option. The default is `1000`, so asynchronous messages on one connection can overlap. Use `new CloudflareWebSocketAdapter({ maxConcurrentMessages: 1 })` when authentication must finish before a later subscription is handled. The limit applies per connection to both Durable Object hosts, including messages delivered through `webSocketMessage` after hibernation. Other connections can keep processing independently. An in-progress handler must finish before the next queued message starts when the limit is `1`.
+
+Gateways use port `0`, the default. Separate listening ports and Socket.IO namespaces are unsupported.
+
+The base class implements `fetch`, `webSocketMessage`, `webSocketClose`, and `webSocketError`. It accepts connections through `ctx.acceptWebSocket` and waits for Nest startup before dispatching events after hibernation. Restored connections are registered with Nest again, so `handleConnection` can run more than once for a socket. Singleton gateways are shared by the application. Inject durable providers for object-owned I/O and keep persistent room state in Durable Object storage or socket attachments.
+
+For Durable Objects that must keep in-memory sessions, timers, and upstream sockets, use the non-hibernating gateway host. It calls `server.accept()` and keeps each object's sockets isolated:
+
+```ts
+import {
+  ConnectedSocket,
+  SubscribeMessage,
+  WebSocketGateway,
+} from '@nestjs/websockets';
+import {
+  CloudflareWebSocketAdapter,
+  CloudflareWebSocketGatewayDurableObject,
+  getCloudflareWebSocketContext,
+} from 'nestjs-cloudflare/websockets';
+
+@WebSocketGateway({ path: '/ws' })
+@WebSocketGateway({ path: '/mobula' })
+class ApiGateway {
+  @SubscribeMessage('publish')
+  publish(@ConnectedSocket() socket: WebSocket, value: unknown): null {
+    const { sockets } = getCloudflareWebSocketContext(socket);
+    for (const peer of sockets) {
+      peer.send(JSON.stringify(value));
+    }
+    return null;
+  }
+}
+
+const adapter = new CloudflareWebSocketAdapter({
+  messageSerializer: value => JSON.stringify(value),
+});
+
+export class ApiWebSocket extends CloudflareWebSocketGatewayDurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env, {
+      adapter,
+      paths: ['/ws', '/mobula'],
+      getApplication: worker.getApplication,
+    });
+  }
+
+  protected nonWebSocketFetch(request: Request): Response {
+    return new Response(`internal:${new URL(request.url).pathname}`);
+  }
+}
+```
+
+`getCloudflareWebSocketContext(socket)` exposes the owning object's `ctx`, `storage`, `env`, object instance, and in-memory `sockets` set. `messageSerializer` may return a string or `ArrayBuffer`, so binary or protocol-specific frames are supported. The `paths` list lets one Durable Object serve multiple gateway paths; in the example the same gateway handles `/ws` and `/mobula`. Override `nonWebSocketFetch` for the object's other requests.
 
 Clients send `{"event":"echo","data":"hello"}`. The handler receives `data` and its return value is JSON-serialized directly to the client. Promise and observable results are supported. Configure `messageParser` for another wire protocol:
 
@@ -288,6 +414,146 @@ const adapter = new CloudflareWebSocketAdapter({
 ```
 
 A parser can return `undefined` to ignore a frame. The default parser closes malformed JSON messages with code `1007`. A custom parser can throw `InvalidWebSocketMessageException` for that close code; unexpected failures close with `1011`.
+
+## Durable Object microservices
+
+Install `@nestjs/microservices`. Connect a `CloudflareDurableObjectServer` during bootstrap, just like the Queue transport. Import `CloudflareModule.forRoot()` in `AppModule` to provide `CloudflareRequestContext`.
+
+```ts
+import { NestFactory } from '@nestjs/core';
+import {
+  CloudflareDurableObject,
+  CloudflareDurableObjectServer,
+} from 'nestjs-cloudflare/durable-objects';
+
+const transport = new CloudflareDurableObjectServer();
+let application: ReturnType<typeof bootstrap> | undefined;
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.connectMicroservice({ strategy: transport }, { inheritAppConfig: true });
+  await app.init();
+  await app.startAllMicroservices();
+  return app;
+}
+
+export class JobLease extends CloudflareDurableObject<Env> {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env, {
+      server: transport,
+      getApplication: () => (application ??= bootstrap()),
+      alarmPattern: 'alarm',
+    });
+  }
+}
+```
+
+Export the class from the Worker entry point and register it in Wrangler's Durable Object bindings and migrations. This transport uses native Workers RPC and requires a compatibility date of `2024-04-03` or later. It does not expose an HTTP URL. Each message carries Nest's pattern and data to the object's `dispatch` RPC method.
+
+Register handlers as Nest controllers. `@Ctx()` receives the native state, environment, and normalized pattern. Durable providers use the same object isolation described below; ordinary request providers are recreated for each invocation.
+
+```ts
+import { Controller, Injectable, Scope } from '@nestjs/common';
+import {
+  Ctx,
+  EventPattern,
+  MessagePattern,
+  Payload,
+} from '@nestjs/microservices';
+import { CloudflareDurableObjectContext } from 'nestjs-cloudflare/durable-objects';
+
+@Injectable({ scope: Scope.REQUEST, durable: true })
+class LeaseService {
+  async acquire(state: DurableObjectState, owner: string) {
+    return state.storage.transaction(async storage => {
+      if (await storage.get('owner')) {
+        return { acquired: false };
+      }
+      await storage.put('owner', owner);
+      return { acquired: true };
+    });
+  }
+}
+
+@Controller()
+class LeaseController {
+  constructor(private readonly leases: LeaseService) {}
+
+  @MessagePattern('acquire')
+  acquire(
+    @Payload() owner: string,
+    @Ctx() context: CloudflareDurableObjectContext,
+  ) {
+    return this.leases.acquire(context.getState(), owner);
+  }
+
+  @EventPattern('alarm')
+  async alarm(@Ctx() context: CloudflareDurableObjectContext) {
+    await context.getState().storage.delete('owner');
+  }
+}
+```
+
+Register `LeaseController` in `controllers` and `LeaseService` in `providers`. Schedule alarms with `context.getState().storage.setAlarm(timestamp)`. The base class dispatches native alarms to `@EventPattern('alarm')`, or to the configured `alarmPattern`, and awaits completion so failures can trigger Cloudflare's alarm retries. Alarm data is `undefined`.
+
+Register the client through `ClientsModule` and select the target separately for each message using Nest's record builder convention:
+
+```ts
+import { ClientsModule } from '@nestjs/microservices';
+import { env } from 'cloudflare:workers';
+import { firstValueFrom } from 'rxjs';
+import {
+  CloudflareDurableObjectClient,
+  CloudflareDurableObjectRecordBuilder,
+} from 'nestjs-cloudflare/durable-objects';
+
+const clients = ClientsModule.register([
+  {
+    name: 'JOB_LEASES',
+    customClass: CloudflareDurableObjectClient,
+    options: { namespace: env.JOB_LEASES },
+  },
+]);
+
+// Import clients in a Nest module and inject its ClientProxy with @Inject('JOB_LEASES').
+const record = new CloudflareDurableObjectRecordBuilder('worker-owner')
+  .setOptions({ name: 'job:sync-feed' })
+  .build();
+const result = await firstValueFrom(client.send('acquire', record));
+```
+
+Use `{ id: durableObjectId.toString() }` instead of `{ name }` to address an existing ID. Address options stay outside handler data. `ClientsModule.registerAsync` can inject a namespace using `getBindingToken`, as with Queues. `emit` invokes `@EventPattern` handlers and awaits their completion.
+
+Both client and server accept Nest serializers and deserializers. The default client serializer unwraps records into `{ ...packet, data, options }`; a replacement serializer must preserve that shape to select an object. `send` preserves the payload from `RpcException`, including structured error codes, as the Observable error. Handler Observable replies are collected until completion and returned in order by the RPC call; use finite streams.
+
+`CloudflareRequestContext` is available inside request and alarm handlers. `getEnv()` returns the object's environment, `getRequest()` returns `undefined`, and `getExecutionContext()` returns its native `DurableObjectState`, including `waitUntil`. The execution-context type also permits Worker `ExecutionContext` for Worker events; narrow the union before using event-specific methods.
+
+## Durable Object dependency scopes
+
+Mark providers that own upstream sockets, fetch streams, or timers with Nest's `@Injectable({ scope: Scope.REQUEST, durable: true })`. Both gateway hosts bind each accepted or restored socket to its owning Durable Object before Nest resolves the gateway. Nest's durable dependency tree is reused across connections and events in that object. Default singleton providers remain shared across the application, and ordinary request-scoped providers retain their event or connection scope.
+
+```ts
+import { Injectable, Scope } from '@nestjs/common';
+import { resolveForDurableObject } from 'nestjs-cloudflare';
+
+@Injectable({ scope: Scope.REQUEST, durable: true })
+class UpstreamClient {
+  // Create and retain upstream I/O here, in the owning object's event.
+}
+
+// Inside a native Durable Object's fetch, alarm, or RPC method:
+const client = await resolveForDurableObject(
+  await worker.getApplication(),
+  this.ctx,
+  UpstreamClient,
+);
+```
+
+Register the provider in a Nest module. A gateway can inject it through its constructor; durability propagates through the dependency tree according to [Nest's durable provider rules](https://docs.nestjs.com/fundamentals/injection-scopes#durable-providers). In subclasses of either gateway host, use `await this.resolve(UpstreamClient)` from `fetch`, `nonWebSocketFetch`, `alarm`, or RPC handlers. Native Durable Objects use `resolveForDurableObject(app, ctx, token)` in each event. Resolve within the owning object's event so workerd also assigns any new I/O to that object.
+
+The package installs `DurableObjectContextIdStrategy` globally through `ContextIdFactory.apply` on first use. It associates Nest event contexts with the object's state and ID, and selects their shared parent only for durable dependency trees. This occupies Nest's single global strategy slot; applications with another custom strategy must compose the strategies. `getDurableObjectContextId(ctx)` exposes the event context for direct Nest integration. The helper also registers the context payload, so `@Inject(REQUEST)` can receive `{ durableObjectId, ctx }`.
+
+Context ownership is weakly keyed by the native `DurableObjectState`, so an evicted activation does not leave an isolate-wide ID cache behind. Hibernation, eviction, or isolate restart creates a new in-memory provider tree; durable providers do not persist sockets, timers, or JavaScript state across those boundaries. Use non-hibernating hosts when upstream sessions must stay in memory, and use Durable Object storage for persistent state. Nest does not run application lifecycle hooks for request-scoped providers; manage object-owned resources explicitly.
 
 ## Build and local development
 

@@ -8,6 +8,9 @@ import { env } from 'cloudflare:workers';
 
 import { getBindingToken } from './bindings/get-binding-token.js';
 import { CLOUDFLARE_ENV } from './constants.js';
+import { CloudflareRequestContext } from './worker/request-context.js';
+
+export { CloudflareRequestContext } from './worker/request-context.js';
 
 /**
  * Makes the native Cloudflare environment and its bindings available to Nest.
@@ -33,8 +36,16 @@ export class CloudflareModule {
 
     return {
       module: CloudflareModule,
-      providers: [{ provide: CLOUDFLARE_ENV, useValue: env }, ...bindings],
-      exports: [CLOUDFLARE_ENV, ...bindings.map(binding => binding.provide)],
+      providers: [
+        CloudflareRequestContext,
+        { provide: CLOUDFLARE_ENV, useValue: env },
+        ...bindings,
+      ],
+      exports: [
+        CloudflareRequestContext,
+        CLOUDFLARE_ENV,
+        ...bindings.map(binding => binding.provide),
+      ],
     };
   }
 }

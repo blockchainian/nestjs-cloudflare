@@ -1,11 +1,15 @@
 {
   "name": "nestjs-cloudflare",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./durable-objects": {
+      "types": "./dist/durable-objects/index.d.ts",
+      "import": "./dist/durable-objects/index.js"
     },
     "./queue": {
       "types": "./dist/queue/index.d.ts",

@@ -112,6 +112,37 @@ describe('CloudflareModule', () => {
 });
 
 describe('InjectBinding', () => {
+  it('should inject a native DurableObjectNamespace and use its stub', async () => {
+    await withEnv({ ROOM: env.ROOM }, async () => {
+      @Injectable()
+      class RoomConsumer {
+        constructor(
+          @InjectBinding('ROOM') public readonly rooms: typeof env.ROOM,
+        ) {}
+      }
+
+      const module = await Test.createTestingModule({
+        imports: [CloudflareModule.forRoot()],
+        providers: [RoomConsumer],
+      }).compile();
+
+      try {
+        await module.init();
+        const rooms = module.get(RoomConsumer).rooms;
+
+        expect(rooms).toBe(env.ROOM);
+
+        const response = await rooms
+          .getByName('injected')
+          .fetch('https://worker.test/chat');
+
+        expect(response.status).toBe(426);
+      } finally {
+        await module.close();
+      }
+    });
+  });
+
   it('should leave RPC bindings to Nest dependency resolution', async () => {
     await withEnv({ SERVICE: env.RPC_SERVICE }, async () => {
       @Injectable()

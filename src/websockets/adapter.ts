@@ -2,15 +2,22 @@ import { Logger, type WsMessageHandler } from '@nestjs/common';
 import { AbstractWsAdapter } from '@nestjs/websockets';
 import { lastValueFrom, type Observable, tap } from 'rxjs';
 
+import {
+  attachCloudflareWebSocketContext,
+  type CloudflareWebSocketContext,
+  detachCloudflareWebSocketContext,
+} from './context.js';
 import type { CloudflareWebSocketAdapterOptions } from './interfaces/adapter-options.interface.js';
 import type { CloudflareWebSocketServer } from './interfaces/server.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
+import { WebSocketMessageDispatcher } from './message-dispatcher.js';
 
 type ConnectHandler = (client: WebSocket, request?: Request) => void;
 type DisconnectHandler = (reason?: string) => void;
 type Transform = (data: unknown) => Observable<unknown>;
 
 interface ClientHandlers {
+  dispatcher: WebSocketMessageDispatcher;
   messages: Array<{ handlers: WsMessageHandler[]; transform: Transform }>;
   disconnect: DisconnectHandler[];
 }
@@ -29,12 +36,17 @@ interface ServerHandlers {
 // Durable Objects own native WebSockets and their hibernation callbacks.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
+  private readonly maxConcurrentMessages: number;
   private readonly logger = new Logger(CloudflareWebSocketAdapter.name);
   private readonly servers = new Map<string, ServerHandlers>();
+  private readonly aliases = new Map<string, string>();
   private readonly clients = new WeakMap<WebSocket, ClientHandlers>();
 
   private readonly messageParser: NonNullable<
     CloudflareWebSocketAdapterOptions['messageParser']
+  >;
+  private readonly messageSerializer: NonNullable<
+    CloudflareWebSocketAdapterOptions['messageSerializer']
   >;
 
   /**
@@ -42,7 +54,9 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
    */
   constructor(options: CloudflareWebSocketAdapterOptions = {}) {
     super();
+    this.maxConcurrentMessages = options.maxConcurrentMessages ?? 1000;
     this.messageParser = options.messageParser ?? parseMessage;
+    this.messageSerializer = options.messageSerializer ?? JSON.stringify;
   }
 
   /**
@@ -87,6 +101,12 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
     this.server(server.path).connect.push(callback);
   }
 
+  /** Registers an additional path for an already discovered gateway. */
+  public registerPathAlias(path: string, targetPath: string): void {
+    this.server(targetPath);
+    this.aliases.set(path, targetPath);
+  }
+
   /**
    * Registers Nest's disconnection callback for a native socket.
    */
@@ -111,14 +131,30 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Binds a connection or a restored socket through Nest's gateway pipeline.
    */
-  public connect(path: string, socket: WebSocket, request?: Request): void {
+  public connect(
+    path: string,
+    socket: WebSocket,
+    request?: Request,
+    context?: CloudflareWebSocketContext<unknown, unknown>,
+  ): void {
     if (this.clients.has(socket)) {
       return;
     }
 
     const { connect } = this.server(path);
 
-    this.clients.set(socket, { messages: [], disconnect: [] });
+    this.clients.set(socket, {
+      messages: [],
+      disconnect: [],
+      dispatcher: new WebSocketMessageDispatcher(
+        frame => this.dispatchMessage(socket, frame),
+        this.maxConcurrentMessages,
+      ),
+    });
+
+    if (context) {
+      attachCloudflareWebSocketContext(socket, context);
+    }
 
     for (const callback of connect) {
       callback(socket, request);
@@ -128,7 +164,14 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Dispatches a JSON event through Nest and sends every returned value.
    */
-  public async message(
+  public message(
+    socket: WebSocket,
+    frame: string | ArrayBuffer,
+  ): Promise<void> {
+    return this.client(socket).dispatcher.dispatch(frame);
+  }
+
+  private async dispatchMessage(
     socket: WebSocket,
     frame: string | ArrayBuffer,
   ): Promise<void> {
@@ -153,7 +196,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
                     result !== null &&
                     socket.readyState === WebSocket.OPEN
                   ) {
-                    socket.send(JSON.stringify(result));
+                    socket.send(this.messageSerializer(result));
                   }
                 }),
               ),
@@ -170,7 +213,9 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   public disconnect(socket: WebSocket, reason: string): void {
     const handlers = this.client(socket);
 
+    handlers.dispatcher.close();
     this.clients.delete(socket);
+    detachCloudflareWebSocketContext(socket);
 
     for (const callback of handlers.disconnect) {
       callback(reason);
@@ -200,10 +245,11 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
    */
   public async dispose(): Promise<void> {
     this.servers.clear();
+    this.aliases.clear();
   }
 
   private server(path: string): ServerHandlers {
-    const server = this.servers.get(path);
+    const server = this.servers.get(this.aliases.get(path) ?? path);
 
     if (!server) {
       throw new Error(`No Nest WebSocket gateway registered for path: ${path}`);

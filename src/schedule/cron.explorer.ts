@@ -105,45 +105,72 @@ export class CronExplorer implements OnModuleInit {
     controller: ScheduledController,
     ctx: WorkerExecutionContext,
   ): boolean {
+    const execution = this.execute(controller, ctx);
+
+    if (!execution) {
+      return false;
+    }
+
+    ctx.waitUntil(execution);
+
+    return true;
+  }
+
+  /** Runs matching handlers and resolves only after all handlers finish. */
+  public async dispatchAndWait(
+    controller: ScheduledController,
+    _ctx: WorkerExecutionContext,
+  ): Promise<boolean> {
+    const execution = this.execute(controller, _ctx);
+
+    if (!execution) {
+      return false;
+    }
+
+    await execution;
+
+    return true;
+  }
+
+  private execute(
+    controller: ScheduledController,
+    ctx: WorkerExecutionContext,
+  ): Promise<void> | undefined {
     const matches = this.handlers.filter(
       ({ expression, options }) =>
         !options.disabled && expression === controller.cron,
     );
 
     if (matches.length === 0) {
-      return false;
+      return undefined;
     }
 
-    ctx.waitUntil(
-      Promise.allSettled(
-        matches
-          .filter(
-            handler => !handler.options.waitForCompletion || !handler.running,
-          )
-          .map(handler => {
-            handler.running = true;
+    return Promise.allSettled(
+      matches
+        .filter(
+          handler => !handler.options.waitForCompletion || !handler.running,
+        )
+        .map(handler => {
+          handler.running = true;
 
-            return Promise.resolve()
-              .then(() => handler.invoke(controller, ctx))
-              .finally(() => {
-                handler.running = false;
-              });
-          }),
-      ).then(results => {
-        const errors = results
-          .filter(result => result.status === 'rejected')
-          .map(result => result.reason as unknown);
+          return Promise.resolve()
+            .then(() => handler.invoke(controller, ctx))
+            .finally(() => {
+              handler.running = false;
+            });
+        }),
+    ).then(results => {
+      const errors = results
+        .filter(result => result.status === 'rejected')
+        .map(result => result.reason as unknown);
 
-        if (errors.length > 0) {
-          for (const error of errors) {
-            this.logger.error(error);
-          }
-
-          throw new AggregateError(errors, 'Cron handlers failed');
+      if (errors.length > 0) {
+        for (const error of errors) {
+          this.logger.error(error);
         }
-      }),
-    );
 
-    return true;
+        throw new AggregateError(errors, 'Cron handlers failed');
+      }
+    });
   }
 }
