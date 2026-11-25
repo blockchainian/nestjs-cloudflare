@@ -2,7 +2,13 @@ import { connect, type Socket } from 'node:net';
 
 import { type Miniflare, type Request, Response } from 'miniflare';
 
-const connections = new Map<string, Socket>();
+interface RawConnection {
+  socket: Socket;
+  closeSent: boolean;
+  closed: Promise<{ code: number; reason: string }>;
+}
+
+const connections = new Map<string, RawConnection>();
 
 async function openWebSocket(address: URL, path: string): Promise<Socket> {
   const socket = connect(Number(address.port), address.hostname);
@@ -46,6 +52,65 @@ async function openWebSocket(address: URL, path: string): Promise<Socket> {
   }
 }
 
+function receiveClose(
+  socket: Socket,
+): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve, reject) => {
+    let received = Buffer.alloc(0);
+
+    socket.on('error', reject);
+
+    socket.on('data', (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk]);
+
+      if (received.length < 2) {
+        return;
+      }
+
+      const length = received[1] & 0x7f;
+
+      if (received.length < length + 2) {
+        return;
+      }
+
+      if (received[0] !== 0x88) {
+        reject(new Error('Expected an unmasked WebSocket Close frame'));
+
+        return;
+      }
+
+      resolve({
+        code: length === 0 ? 1005 : received.readUInt16BE(2),
+        reason: length === 0 ? '' : received.subarray(4, length + 2).toString(),
+      });
+    });
+  });
+}
+
+function sendClose(
+  socket: Socket,
+  code: number | undefined,
+  reason: string,
+): void {
+  const payload =
+    code === undefined
+      ? Buffer.alloc(0)
+      : Buffer.alloc(2 + Buffer.byteLength(reason));
+
+  if (code !== undefined) {
+    payload.writeUInt16BE(code);
+    payload.write(reason, 2);
+  }
+
+  // Use an all-zero masking key so the payload bytes remain unchanged.
+  socket.write(
+    Buffer.concat([
+      Buffer.from([0x88, 0x80 | payload.length, 0, 0, 0, 0]),
+      payload,
+    ]),
+  );
+}
+
 function sendProtocolError(socket: Socket): Promise<void> {
   // RFC 6455 reserves opcode 0x3. Send a masked frame with that opcode.
   return new Promise(resolve => {
@@ -60,14 +125,38 @@ export async function handleRawWebSocket(
   const path = new URL(request.url).pathname;
 
   if (request.method === 'DELETE') {
-    connections.get(path)?.destroy();
+    connections.get(path)?.socket.destroy();
     connections.delete(path);
 
     return new Response(null, { status: 204 });
   }
 
+  if (request.method === 'PATCH' || request.method === 'PUT') {
+    const connection = connections.get(path);
+
+    if (!connection) {
+      throw new Error('Expected an established WebSocket connection');
+    }
+
+    if (request.method === 'PUT') {
+      const { code, reason } = (await request.json()) as {
+        code?: number;
+        reason: string;
+      };
+
+      connection.closeSent = true;
+      sendClose(connection.socket, code, reason);
+    }
+
+    const frame = await connection.closed;
+
+    return new Response(
+      JSON.stringify({ ...frame, handshakeComplete: connection.closeSent }),
+    );
+  }
+
   if (request.method === 'POST') {
-    const socket = connections.get(path);
+    const socket = connections.get(path)?.socket;
 
     if (!socket) {
       throw new Error('Expected an established WebSocket connection');
@@ -80,7 +169,13 @@ export async function handleRawWebSocket(
 
   const address = await miniflare.unsafeGetDirectURL();
 
-  connections.set(path, await openWebSocket(address, path));
+  const socket = await openWebSocket(address, path);
+
+  connections.set(path, {
+    socket,
+    closeSent: false,
+    closed: receiveClose(socket),
+  });
 
   return new Response(JSON.stringify({ upgraded: true }));
 }

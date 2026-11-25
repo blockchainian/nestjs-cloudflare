@@ -1,8 +1,14 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, inject, it } from 'vitest';
 
 import { ActiveErrorRoom, HibernatingErrorRoom } from './error-worker.js';
+
+declare module 'vitest' {
+  export interface ProvidedContext {
+    manualClose: boolean;
+  }
+}
 
 type ErrorRoom = ActiveErrorRoom | HibernatingErrorRoom;
 
@@ -65,6 +71,59 @@ async function failSocket(
 describe.each(['ACTIVE_ERROR', 'HIBERNATING_ERROR'] as const)(
   '%s socket errors',
   host => {
+    it.each([
+      { code: undefined, reason: '', replyCode: 1000 },
+      { code: 1000, reason: '', replyCode: 1000 },
+      { code: 4001, reason: 'Client finished', replyCode: 4001 },
+    ])(
+      'completes peer close $code with reason "$reason" without gateway close',
+      async ({ code, reason, replyCode }) => {
+        const stub = bindings[host].getByName(`close-${code}`);
+        const url = `http://raw/socket-error/${host}/close-${code}`;
+
+        await bindings.RAW_WEBSOCKET.fetch(url);
+
+        const response = await bindings.RAW_WEBSOCKET.fetch(url, {
+          method: 'PUT',
+          body: JSON.stringify({ code, reason }),
+        });
+
+        const event = await response.json<{
+          code: number;
+          reason: string;
+          handshakeComplete: boolean;
+        }>();
+
+        expect(event.handshakeComplete).toBe(true);
+
+        if (
+          code === undefined &&
+          host === 'ACTIVE_ERROR' &&
+          !inject('manualClose')
+        ) {
+          expect(event.code).toBe(1005);
+        } else {
+          expect(event.code).toBe(replyCode);
+        }
+
+        expect(event.reason).toBe(reason);
+
+        await bindings.RAW_WEBSOCKET.fetch(url, { method: 'DELETE' });
+
+        const snapshot = await runInDurableObject(stub, instance =>
+          instance.events.snapshot(),
+        );
+
+        expect(snapshot.disconnects).toBe(1);
+        expect(snapshot.reasons).toEqual([reason]);
+        expect(snapshot.disconnectEvents).toEqual([{ type: 'close', reason }]);
+        expect(snapshot.disconnectStates).toEqual([WebSocket.CLOSED]);
+        expect(snapshot.connections).toBe(0);
+        expect(snapshot.readyState).toBe(WebSocket.CLOSED);
+        expect(snapshot.errors).toEqual([]);
+      },
+    );
+
     it('logs a real protocol error and disconnects the gateway exactly once without a close event', async () => {
       const stub = bindings[host].getByName('native-error');
       const release = await failSocket(host, 'native-error');
@@ -74,7 +133,20 @@ describe.each(['ACTIVE_ERROR', 'HIBERNATING_ERROR'] as const)(
 
         expect(snapshot.errors).toHaveLength(1);
         expect(snapshot.nativeEvents).toEqual(['error']);
+
+        const wire = await bindings.RAW_WEBSOCKET.fetch(
+          `http://raw/socket-error/${host}/native-error`,
+          { method: 'PATCH' },
+        );
+
+        expect(await wire.json()).toMatchObject({
+          code: 1002,
+          handshakeComplete: false,
+        });
+
         expect(snapshot.disconnects).toBe(1);
+        expect(snapshot.reasons).toEqual([undefined]);
+        expect(snapshot.disconnectEvents).toEqual([{ type: 'error' }]);
         expect(snapshot.connections).toBe(0);
 
         if (host === 'ACTIVE_ERROR') {
@@ -116,6 +188,8 @@ describe.each(['ACTIVE_ERROR', 'HIBERNATING_ERROR'] as const)(
         });
 
         expect(snapshot.disconnects).toBe(1);
+        expect(snapshot.reasons).toEqual([undefined]);
+        expect(snapshot.disconnectEvents).toEqual([{ type: 'error' }]);
         expect(snapshot.connections).toBe(0);
         expect(snapshot.errors).toHaveLength(1);
       } finally {

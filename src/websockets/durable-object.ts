@@ -5,6 +5,7 @@ import {
   resolveForDurableObject,
 } from '../durable-objects/context.js';
 import { CloudflareDurableObjectHost } from '../durable-objects/host.js';
+import { completeWebSocketClose } from './close-handshake.js';
 import type { CloudflareWebSocketDurableObjectOptions } from './interfaces/durable-object-options.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
 
@@ -99,12 +100,7 @@ export abstract class CloudflareWebSocketDurableObject<
     await this.ready;
 
     try {
-      if (
-        socket.readyState === WebSocket.OPEN ||
-        socket.readyState === WebSocket.CLOSING
-      ) {
-        socket.close(code === 1005 || code === 1006 ? 1000 : code, reason);
-      }
+      completeWebSocketClose(socket, code, reason);
     } finally {
       this.options.adapter.disconnect(socket, reason);
     }

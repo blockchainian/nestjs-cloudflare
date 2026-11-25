@@ -1,9 +1,13 @@
 export { CloudflareWebSocketAdapter } from './adapter.js';
 export type { CloudflareWebSocketContext } from './context.js';
 export { getCloudflareWebSocketContext } from './context.js';
+export { getCloudflareWebSocketDisconnectEvent } from './disconnect-event.js';
 export { CloudflareWebSocketDurableObject } from './durable-object.js';
 export { CloudflareWebSocketGatewayDurableObject } from './gateway-durable-object.js';
 export type { CloudflareWebSocketAdapterOptions } from './interfaces/adapter-options.interface.js';
+export type { CloudflareWebSocketDisconnectEvent } from './interfaces/disconnect-event.interface.js';
+export type { CloudflareWebSocketDisconnectReason } from './interfaces/disconnect-event.interface.js';
+export type { OnCloudflareWebSocketDisconnect } from './interfaces/disconnect-event.interface.js';
 export type { CloudflareWebSocketDurableObjectOptions } from './interfaces/durable-object-options.interface.js';
 export type { CloudflareWebSocketGatewayOptions } from './interfaces/gateway-options.interface.js';
 export type { CloudflareWebSocketMessage } from './interfaces/message.interface.js';

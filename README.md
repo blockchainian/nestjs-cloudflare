@@ -449,6 +449,33 @@ const adapter = new CloudflareWebSocketAdapter({
 
 A parser can return `undefined` to ignore a frame. The default parser closes malformed JSON messages with code `1007`. A custom parser can throw `InvalidWebSocketMessageException` for that close code. Unexpected parser failures are logged at error level and discard the frame without closing the connection.
 
+Both hosts own the closing handshake. On a peer-initiated close, the host completes the handshake before dispatching `handleDisconnect`; gateway hooks should clean up application state and must not call `socket.close()` to reply. This matches the gateway's responsibility with `@nestjs/platform-ws`, where `ws` replies automatically. When the Workers runtime has not already replied, the host replies with the received close code and reason, mapping the unsendable codes `1005` and `1006` to `1000`.
+
+For sockets accepted with `accept()`, Workers automatically replies with `web_socket_auto_reply_to_close`, enabled by default for compatibility dates from `2026-04-07`. Earlier dates, `web_socket_manual_reply_to_close`, and half-open sockets require an explicit reply. Hibernating sockets accepted with `acceptWebSocket()` require an explicit reply in `webSocketClose()` even when automatic replies are enabled. Both hosts handle these differences; gateways need no compatibility-date checks. See [Workers close behavior](https://developers.cloudflare.com/workers/runtime-apis/websockets/#close-behavior) and [hibernating socket behavior](https://developers.cloudflare.com/workers/runtime-apis/websockets/#state-and-error-behavior).
+
+The public `CloudflareWebSocketDisconnectReason` type is `string | undefined`. A close notification supplies the peer's reason string, including `''` when no reason was provided. A terminal socket error supplies `undefined`. Existing callbacks written as `(reason?: string)` and standard Nest gateways with `handleDisconnect(client)` remain supported. `OnCloudflareWebSocketDisconnect<T = WebSocket>` extends Nest's `OnGatewayDisconnect<T>` with this reason parameter. The helper `getCloudflareWebSocketDisconnectEvent(reason)` returns the discriminated union `CloudflareWebSocketDisconnectEvent`: `{ type: 'close', reason: string }` or `{ type: 'error' }`.
+
+```ts
+import { WebSocketGateway } from '@nestjs/websockets';
+import {
+  type CloudflareWebSocketDisconnectReason,
+  getCloudflareWebSocketDisconnectEvent,
+  type OnCloudflareWebSocketDisconnect,
+} from 'nestjs-cloudflare/websockets';
+
+@WebSocketGateway({ path: '/chat' })
+class ChatGateway implements OnCloudflareWebSocketDisconnect {
+  handleDisconnect(
+    _client: WebSocket,
+    reason: CloudflareWebSocketDisconnectReason,
+  ): void {
+    const event = getCloudflareWebSocketDisconnectEvent(reason);
+
+    console.log(event.type === 'error' ? 'client_error' : event.reason);
+  }
+}
+```
+
 Both hosts follow `@nestjs/platform-ws` for native socket errors: log the error once at error level without initiating a close or choosing a close code. Workers can report a terminal failure through an `error` event or `webSocketError` instead of a close notification. Both hosts therefore invoke the gateway's `handleDisconnect` once on either terminal error or close and release the socket's callbacks and context. A later close notification does not invoke the hook again. Message handler exceptions follow Nest's exception filters instead of this socket error path and do not disconnect the client.
 
 ## Durable Object microservices

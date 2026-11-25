@@ -4,6 +4,10 @@ import { firstValueFrom } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  getDurableObjectNamespace,
+  getQueueBinding,
+} from '../../src/bindings/validate-binding.js';
+import {
   CloudflareDurableObjectClient,
   CloudflareDurableObjectRecordBuilder,
 } from '../../src/durable-objects/index.js';
@@ -16,11 +20,44 @@ const invalidBindings: [string, unknown][] = [
   ['string', 'wrong binding'],
   ['KV', env.STATE],
   ['D1', env.DATABASE],
-  ['service', env.RPC_SERVICE],
-  ['Durable Object stub', env.ROOM.getByName('invalid-namespace')],
 ];
 
 describe('binding validation in workerd', () => {
+  it.each([
+    ['native', env.ROOM],
+    [
+      'plain object',
+      {
+        idFromName: env.ROOM.idFromName.bind(env.ROOM),
+        idFromString: env.ROOM.idFromString.bind(env.ROOM),
+        get: env.ROOM.get.bind(env.ROOM),
+      },
+    ],
+  ])('accepts a %s Durable Object namespace', (_label, namespace) => {
+    expect(getDurableObjectNamespace(namespace, 'ROOM')).toBe(namespace);
+  });
+
+  it.each([
+    ['native', env.OUTBOX],
+    [
+      'plain object',
+      {
+        send: env.OUTBOX.send.bind(env.OUTBOX),
+        sendBatch: env.OUTBOX.sendBatch.bind(env.OUTBOX),
+      },
+    ],
+  ])('accepts a %s Queue binding', (_label, queue) => {
+    expect(getQueueBinding(queue)).toBe(queue);
+  });
+
+  it.each([
+    ['service', env.RPC_SERVICE],
+    ['Durable Object stub', env.ROOM.getByName('invalid-namespace')],
+  ])('defers interface mismatches for an RPC %s until use', (_label, rpc) => {
+    expect(getDurableObjectNamespace(rpc, 'ROOM')).toBe(rpc);
+    expect(getQueueBinding(rpc)).toBe(rpc);
+  });
+
   it.each<[string, unknown]>([...invalidBindings, ['Queue', env.OUTBOX]])(
     'rejects a %s WebSocket namespace with a named configuration error',
     async (_label, binding) => {

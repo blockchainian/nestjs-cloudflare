@@ -8,9 +8,13 @@ import {
 
 import {
   CloudflareWebSocketAdapter,
+  type CloudflareWebSocketDisconnectEvent,
+  type CloudflareWebSocketDisconnectReason,
   CloudflareWebSocketDurableObject,
   CloudflareWebSocketGatewayDurableObject,
   getCloudflareWebSocketContext,
+  getCloudflareWebSocketDisconnectEvent,
+  type OnCloudflareWebSocketDisconnect,
 } from '../../src/websockets/index.js';
 
 @Injectable()
@@ -18,6 +22,9 @@ class SocketEvents implements LoggerService {
   readonly sockets = new Set<WebSocket>();
   readonly errors: string[] = [];
   readonly nativeEvents: string[] = [];
+  readonly reasons: CloudflareWebSocketDisconnectReason[] = [];
+  readonly disconnectStates: number[] = [];
+  readonly disconnectEvents: CloudflareWebSocketDisconnectEvent[] = [];
   disconnects = 0;
   hibernating = false;
   socket?: WebSocket;
@@ -32,7 +39,9 @@ class SocketEvents implements LoggerService {
   warn(_message: unknown): void {}
 
   error(message: unknown): void {
-    this.errors.push(String(message));
+    this.errors.push(
+      String(message instanceof ErrorEvent ? message.message : message),
+    );
   }
 
   recordError(): void {
@@ -45,6 +54,9 @@ class SocketEvents implements LoggerService {
       errors: [...this.errors],
       nativeEvents: [...this.nativeEvents],
       disconnects: this.disconnects,
+      reasons: [...this.reasons],
+      disconnectEvents: [...this.disconnectEvents],
+      disconnectStates: [...this.disconnectStates],
       connections: this.sockets.size,
       readyState: this.socket?.readyState,
       hostConnections: this.hostSockets?.size,
@@ -53,7 +65,7 @@ class SocketEvents implements LoggerService {
 }
 
 @WebSocketGateway({ path: '/errors' })
-class ErrorGateway {
+class ErrorGateway implements OnCloudflareWebSocketDisconnect {
   constructor(private readonly events: SocketEvents) {}
 
   handleConnection(socket: WebSocket): void {
@@ -70,7 +82,16 @@ class ErrorGateway {
     }
   }
 
-  handleDisconnect(socket: WebSocket): void {
+  handleDisconnect(
+    socket: WebSocket,
+    reason: CloudflareWebSocketDisconnectReason,
+  ): void {
+    this.events.disconnectEvents.push(
+      getCloudflareWebSocketDisconnectEvent(reason),
+    );
+
+    this.events.reasons.push(reason);
+    this.events.disconnectStates.push(socket.readyState);
     this.events.disconnects++;
     this.events.sockets.delete(socket);
   }
