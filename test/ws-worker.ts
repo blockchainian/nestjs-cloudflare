@@ -225,3 +225,10 @@ export default {
     return new Response('WebSocket test worker');
   },
 };
+
+export {
+  ActiveScopeRoom,
+  HibernatingScopeRoom,
+  NativeScopeRoom,
+  UpstreamRoom,
+} from './durable-scope-worker.js';

@@ -1,3 +1,5 @@
+import type { INestApplicationContext } from '@nestjs/common';
+
 import type { CloudflareWebSocketAdapter } from '../adapter.js';
 
 /** Options for a non-hibernating Durable Object gateway host. */
@@ -9,5 +11,5 @@ export interface CloudflareWebSocketGatewayOptions {
   paths: readonly string[];
 
   /** Starts or retrieves the initialized Nest application. */
-  getApplication: () => Promise<unknown>;
+  getApplication: () => Promise<INestApplicationContext>;
 }

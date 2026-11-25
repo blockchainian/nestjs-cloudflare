@@ -289,7 +289,7 @@ export class ChatRoom extends CloudflareWebSocketDurableObject<Env> {
 
 Register the gateway as an application provider. Route upgrade requests to `env.CHAT.get(id).fetch(request)` and configure the Durable Object binding and migration. Gateways use port `0`, the default. Separate listening ports and Socket.IO namespaces are unsupported.
 
-The base class implements `fetch`, `webSocketMessage`, `webSocketClose`, and `webSocketError`. It accepts connections through `ctx.acceptWebSocket` and waits for Nest startup before dispatching events after hibernation. Restored connections are registered with Nest again, so `handleConnection` can run more than once for a socket. Gateways are application singletons; keep persistent room state in Durable Object storage or socket attachments.
+The base class implements `fetch`, `webSocketMessage`, `webSocketClose`, and `webSocketError`. It accepts connections through `ctx.acceptWebSocket` and waits for Nest startup before dispatching events after hibernation. Restored connections are registered with Nest again, so `handleConnection` can run more than once for a socket. Singleton gateways are shared by the application. Inject durable providers for object-owned I/O and keep persistent room state in Durable Object storage or socket attachments.
 
 For Durable Objects that must keep in-memory sessions, timers, and upstream sockets, use the non-hibernating gateway host. It calls `server.accept()` and keeps each object's sockets isolated:
 
@@ -353,6 +353,33 @@ const adapter = new CloudflareWebSocketAdapter({
 ```
 
 A parser can return `undefined` to ignore a frame. The default parser closes malformed JSON messages with code `1007`. A custom parser can throw `InvalidWebSocketMessageException` for that close code; unexpected failures close with `1011`.
+
+## Durable Object dependency scopes
+
+Mark providers that own upstream sockets, fetch streams, or timers with Nest's `@Injectable({ scope: Scope.REQUEST, durable: true })`. Both gateway hosts bind each accepted or restored socket to its owning Durable Object before Nest resolves the gateway. Nest's durable dependency tree is reused across connections and events in that object. Default singleton providers remain shared across the application, and ordinary request-scoped providers retain their event or connection scope.
+
+```ts
+import { Injectable, Scope } from '@nestjs/common';
+import { resolveForDurableObject } from 'nestjs-cloudflare';
+
+@Injectable({ scope: Scope.REQUEST, durable: true })
+class UpstreamClient {
+  // Create and retain upstream I/O here, in the owning object's event.
+}
+
+// Inside a native Durable Object's fetch, alarm, or RPC method:
+const client = await resolveForDurableObject(
+  await worker.getApplication(),
+  this.ctx,
+  UpstreamClient,
+);
+```
+
+Register the provider in a Nest module. A gateway can inject it through its constructor; durability propagates through the dependency tree according to [Nest's durable provider rules](https://docs.nestjs.com/fundamentals/injection-scopes#durable-providers). In subclasses of either gateway host, use `await this.resolve(UpstreamClient)` from `fetch`, `nonWebSocketFetch`, `alarm`, or RPC handlers. Native Durable Objects use `resolveForDurableObject(app, ctx, token)` in each event. Resolve within the owning object's event so workerd also assigns any new I/O to that object.
+
+The package installs `DurableObjectContextIdStrategy` globally through `ContextIdFactory.apply` on first use. It associates Nest event contexts with the object's state and ID, and selects their shared parent only for durable dependency trees. This occupies Nest's single global strategy slot; applications with another custom strategy must compose the strategies. `getDurableObjectContextId(ctx)` exposes the event context for direct Nest integration. The helper also registers the context payload, so `@Inject(REQUEST)` can receive `{ durableObjectId, ctx }`.
+
+Context ownership is weakly keyed by the native `DurableObjectState`, so an evicted activation does not leave an isolate-wide ID cache behind. Hibernation, eviction, or isolate restart creates a new in-memory provider tree; durable providers do not persist sockets, timers, or JavaScript state across those boundaries. Use non-hibernating hosts when upstream sessions must stay in memory, and use Durable Object storage for persistent state. Nest does not run application lifecycle hooks for request-scoped providers; manage object-owned resources explicitly.
 
 ## Build and local development
 

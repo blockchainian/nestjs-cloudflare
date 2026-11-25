@@ -1,5 +1,10 @@
+import type { InjectionToken } from '@nestjs/common';
 import { DurableObject } from 'cloudflare:workers';
 
+import {
+  attachDurableObjectContext,
+  resolveForDurableObject,
+} from '../durable-objects/context.js';
 import type { CloudflareWebSocketContext } from './context.js';
 import type { CloudflareWebSocketGatewayOptions } from './interfaces/gateway-options.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
@@ -37,6 +42,15 @@ export abstract class CloudflareWebSocketGatewayDurableObject<
     });
   }
 
+  /** Resolves object-owned providers from fetch, alarm, and RPC handlers. */
+  protected async resolve<T>(token: InjectionToken<T>): Promise<T> {
+    return resolveForDurableObject(
+      await this.options.getApplication(),
+      this.ctx,
+      token,
+    );
+  }
+
   /** Accepts a matching upgrade with server.accept(). */
   public async fetch(request: Request): Promise<Response> {
     await this.ready;
@@ -69,6 +83,7 @@ export abstract class CloudflareWebSocketGatewayDurableObject<
 
     this.sockets.add(server);
 
+    attachDurableObjectContext(server, this.ctx);
     this.options.adapter.connect(path, server, request, context);
 
     server.addEventListener('message', event => {
