@@ -110,12 +110,16 @@ export abstract class CloudflareWebSocketDurableObject<
     }
   }
 
-  /** Reports native socket errors through the Nest adapter. */
+  /** Reports terminal socket errors and dispatches disconnection hooks. */
   public async webSocketError(
     socket: WebSocket,
     error: unknown,
   ): Promise<void> {
     await this.ready;
+
+    // Terminal sockets may already be absent from getWebSockets() on wakeup.
+    this.options.adapter.connect(this.options.path, socket);
     this.options.adapter.error(socket, error);
+    this.options.adapter.disconnect(socket);
   }
 }

@@ -4,6 +4,7 @@ import {
   type WritePacket,
 } from '@nestjs/microservices';
 
+import { getQueueBinding } from '../bindings/validate-binding.js';
 import type { CloudflareQueueClientOptions } from './interfaces/client-options.interface.js';
 import { CloudflareQueueRecordSerializer } from './record.serializer.js';
 
@@ -26,7 +27,7 @@ export class CloudflareQueueClient extends ClientProxy {
 
   /** Returns the Queue binding without opening a broker connection. */
   public async connect(): Promise<Queue> {
-    return this.options.queue;
+    return this.unwrap<Queue>();
   }
 
   /** Releases no resources because Workers owns the Queue binding. */
@@ -34,7 +35,7 @@ export class CloudflareQueueClient extends ClientProxy {
 
   /** Returns the underlying Queue binding. */
   public unwrap<T>(): T {
-    return this.options.queue as T;
+    return getQueueBinding(this.options.queue) as T;
   }
 
   protected publish(

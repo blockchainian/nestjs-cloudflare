@@ -96,7 +96,9 @@ export abstract class CloudflareWebSocketGatewayDurableObject<
     });
 
     server.addEventListener('error', event => {
+      this.sockets.delete(server);
       this.options.adapter.error(server, event);
+      this.options.adapter.disconnect(server);
     });
 
     return new Response(null, { status: 101, webSocket: client });

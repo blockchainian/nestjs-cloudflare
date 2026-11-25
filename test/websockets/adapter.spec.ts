@@ -167,21 +167,29 @@ describe('CloudflareWebSocketAdapter', () => {
     expect((await done).code).toBe(1007);
   });
 
-  it('should route native error callbacks through the adapter', async () => {
+  it('should disconnect native error callbacks without initiating a close', async () => {
     const { socket, stub } = await connect('error');
-    const done = closed(socket);
+    const before = await stub.disconnections();
 
-    await runInDurableObject<SocketRoom, void>(stub, (instance, state) => {
-      const server = state.getWebSockets()[0];
+    const readyState = await runInDurableObject<SocketRoom, number>(
+      stub,
+      async (instance, state) => {
+        const server = state.getWebSockets()[0];
 
-      if (!server) {
-        throw new Error('Expected an accepted socket');
-      }
+        if (!server) {
+          throw new Error('Expected an accepted socket');
+        }
 
-      return instance.webSocketError(server, new Error('Native error'));
-    });
+        await instance.webSocketError(server, new Error('Native error'));
 
-    expect((await done).code).toBe(1011);
+        return server.readyState;
+      },
+    );
+
+    expect(readyState).toBe(WebSocket.OPEN);
+    expect(await stub.disconnections()).toBe(before + 1);
+
+    await disconnect(socket);
   });
 
   it('should map a client protocol through messageParser on a thin Durable Object subclass', async () => {
@@ -230,11 +238,14 @@ describe('CloudflareWebSocketAdapter', () => {
 
   it('should distinguish application parser failures from malformed client messages', async () => {
     const { socket } = await connectTo('custom-error', env.PARSER_ROOM);
-    const done = closed(socket);
+    const reply = Promise.race([nextMessage(socket), closed(socket)]);
 
     socket.send('explode');
+    socket.send('echo:after-error');
 
-    expect((await done).code).toBe(1011);
+    expect(await reply).toEqual({ event: 'reply', data: 'Nest:after-error' });
+
+    await disconnect(socket);
   });
 
   it('should let a custom parser identify malformed frames with the named error', async () => {

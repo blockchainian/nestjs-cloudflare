@@ -213,8 +213,12 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Dispatches disconnection hooks and releases this socket's callbacks.
    */
-  public disconnect(socket: WebSocket, reason: string): void {
-    const handlers = this.client(socket);
+  public disconnect(socket: WebSocket, reason?: string): void {
+    const handlers = this.clients.get(socket);
+
+    if (!handlers) {
+      return;
+    }
 
     handlers.dispatcher.close();
     this.clients.delete(socket);
@@ -226,14 +230,10 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   }
 
   /**
-   * Logs a native socket error through Nest and closes the connection.
+   * Logs an error through Nest without closing the connection.
    */
-  public error(socket: WebSocket, error: unknown): void {
+  public error(_socket: WebSocket, error: unknown): void {
     this.logger.error(error);
-
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.close(1011, 'WebSocket error');
-    }
   }
 
   /**
