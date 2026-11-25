@@ -12,6 +12,7 @@ import { CLOUDFLARE_DURABLE_OBJECT_TRANSPORT } from './constants.js';
 import { attachDurableObjectContext } from './context.js';
 import { CloudflareDurableObjectContext } from './context.transport.js';
 import type { CloudflareDurableObjectServerOptions } from './interfaces/server-options.interface.js';
+import type { TransportControllerInitializer } from './transport-initialization.js';
 
 type IncomingPacket = ReadPacket & Partial<PacketId>;
 
@@ -47,11 +48,13 @@ export class CloudflareDurableObjectServer
     raw: ReadPacket,
     state: DurableObjectState,
     env: unknown,
+    initializeController?: TransportControllerInitializer,
   ): Promise<WritePacket[]> {
     const { packet, pattern, context } = await this.prepare(
       this.deserializer.deserialize(raw),
       state,
       env,
+      initializeController,
     );
 
     const handler = this.getHandlerByPattern(pattern);
@@ -137,11 +140,13 @@ export class CloudflareDurableObjectServer
     pattern: MsPattern,
     state: DurableObjectState,
     env: unknown,
+    initializeController?: TransportControllerInitializer,
   ): Promise<void> {
     const { pattern: normalized, context } = await this.prepare(
       { pattern, data: undefined },
       state,
       env,
+      initializeController,
     );
 
     await this.handleEvent(normalized, { pattern, data: undefined }, context);
@@ -151,12 +156,14 @@ export class CloudflareDurableObjectServer
     incoming: IncomingPacket | Promise<IncomingPacket>,
     state: DurableObjectState,
     env: unknown,
+    initializeController?: TransportControllerInitializer,
   ) {
     const packet = await incoming;
     const pattern = this.normalizePattern(packet.pattern);
     const context = new CloudflareDurableObjectContext([state, env, pattern]);
 
     attachDurableObjectContext(context, state);
+    await initializeController?.(pattern);
 
     return { packet, pattern, context };
   }

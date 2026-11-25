@@ -298,6 +298,15 @@ export class GatewayRoom extends CloudflareWebSocketGatewayDurableObject {
   }
 }
 
+export {
+  FragileActiveRoom,
+  FragileHibernatingRoom,
+  FragileNativeRoom,
+  HealthyActiveRoom,
+  HealthyHibernatingRoom,
+  HealthyNativeRoom,
+} from './durable-objects/controller-initialization-worker.js';
+
 export default {
   fetch() {
     return new Response('WebSocket test worker');

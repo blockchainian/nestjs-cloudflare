@@ -7,6 +7,9 @@ type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
  * @publicApi
  */
 export interface CloudflareWorkerOptions<Env = Cloudflare.Env> {
+  /** Skips microservice startup when bootstrap has already started them. Defaults to false. */
+  microservicesStarted?: boolean;
+
   /** Wraps complete native event dispatch. */
   around?: {
     fetch?: CloudflareWorkerAroundFetch<Env>;

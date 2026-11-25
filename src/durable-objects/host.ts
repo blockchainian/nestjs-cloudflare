@@ -4,7 +4,10 @@ import { DurableObject } from 'cloudflare:workers';
 
 import { CloudflareRequestContext } from '../worker/request-context.js';
 import type { CloudflareDurableObjectOptions } from './interfaces/server-options.interface.js';
-import { initializeTransportControllers } from './transport-initialization.js';
+import {
+  createTransportControllerInitializer,
+  type TransportControllerInitializer,
+} from './transport-initialization.js';
 
 interface HostOptions {
   getApplication: () => Promise<INestApplicationContext>;
@@ -16,6 +19,7 @@ export abstract class CloudflareDurableObjectHost<
   Env = Cloudflare.Env,
 > extends DurableObject<Env> {
   private transportApplication: Promise<INestApplicationContext> | undefined;
+  private initializeController: TransportControllerInitializer | undefined;
 
   constructor(
     state: DurableObjectState,
@@ -33,7 +37,12 @@ export abstract class CloudflareDurableObjectHost<
     }
 
     return this.run(() =>
-      transport.server.dispatch(packet, this.ctx, this.env),
+      transport.server.dispatch(
+        packet,
+        this.ctx,
+        this.env,
+        this.initializeController,
+      ),
     );
   }
 
@@ -49,18 +58,20 @@ export abstract class CloudflareDurableObjectHost<
         transport.alarmPattern ?? 'alarm',
         this.ctx,
         this.env,
+        this.initializeController,
       ),
     );
   }
 
   private async initialize(): Promise<INestApplicationContext> {
     const app = await this.hostOptions.getApplication();
-    const context = app.get(CloudflareRequestContext);
     const transport = this.hostOptions.transport;
 
     if (transport) {
-      await context.run({ env: this.env, ctx: this.ctx }, () =>
-        initializeTransportControllers(app, transport.server, this.ctx),
+      this.initializeController = createTransportControllerInitializer(
+        app,
+        transport.server,
+        this.ctx,
       );
     }
 

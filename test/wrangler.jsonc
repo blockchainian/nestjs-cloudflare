@@ -3,6 +3,13 @@
   "main": "./ws-worker.ts",
   "durable_objects": {
     "bindings": [
+      { "name": "HEALTHY_NATIVE", "class_name": "HealthyNativeRoom" },
+      { "name": "FRAGILE_NATIVE", "class_name": "FragileNativeRoom" },
+      { "name": "HEALTHY_ACTIVE", "class_name": "HealthyActiveRoom" },
+      { "name": "FRAGILE_ACTIVE", "class_name": "FragileActiveRoom" },
+      { "name": "HEALTHY_HIBERNATING", "class_name": "HealthyHibernatingRoom" },
+      { "name": "FRAGILE_HIBERNATING", "class_name": "FragileHibernatingRoom" },
+
       { "name": "ACTIVE_TRANSPORT", "class_name": "ActiveTransportRoom" },
       {
         "name": "HIBERNATING_TRANSPORT",
@@ -24,6 +31,13 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
+        "HealthyNativeRoom",
+        "FragileNativeRoom",
+        "HealthyActiveRoom",
+        "FragileActiveRoom",
+        "HealthyHibernatingRoom",
+        "FragileHibernatingRoom",
+
         "ActiveTransportRoom",
         "HibernatingTransportRoom",
         "MultiGatewayRoom",

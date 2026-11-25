@@ -11,6 +11,7 @@ import {
   Module,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { EventPattern } from '@nestjs/microservices';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import {
@@ -29,6 +30,7 @@ import {
   CloudflareRequestContext,
   createWorker,
 } from '../../src/index.js';
+import { CloudflareQueueServer } from '../../src/queue/index.js';
 
 async function application(
   metadata: Record<string, unknown> = {},
@@ -587,5 +589,172 @@ describe('worker capabilities', () => {
     expect((await getQueueResult(batch, queueContext)).ackAll).toBe(true);
 
     await (await worker.getApplication()).close();
+  });
+});
+
+class StartupLog extends ConsoleLogger {
+  readonly messages: unknown[] = [];
+
+  override log(message: unknown): void {
+    this.messages.push(message);
+  }
+}
+
+class CountingQueueServer extends CloudflareQueueServer {
+  starts = 0;
+
+  override listen(callback: () => void): void {
+    this.starts++;
+    super.listen(callback);
+  }
+}
+
+@Controller()
+class EventsController {
+  readonly received: unknown[] = [];
+
+  @EventPattern('outbox')
+  consume(data: unknown): void {
+    this.received.push(data);
+  }
+}
+
+@Module({
+  imports: [CloudflareModule.forRoot()],
+  controllers: [EventsController],
+})
+class StartupModule {}
+
+function startupApplication(logger: StartupLog): Promise<INestApplication> {
+  return withEnv(
+    { DATABASE: env.DATABASE, STATE: env.STATE, OUTBOX: env.OUTBOX },
+    async () => {
+      const app = await NestFactory.create(
+        StartupModule,
+        new ExpressAdapter(),
+        {
+          logger,
+          abortOnError: false,
+        },
+      );
+
+      await app.init();
+
+      return app;
+    },
+  ) as Promise<INestApplication>;
+}
+
+function startupMessages(logger: StartupLog): unknown[] {
+  return logger.messages.filter(
+    message => message === 'Nest microservice successfully started',
+  );
+}
+
+describe('worker startup', () => {
+  it('starts every connected microservice by default', async () => {
+    const logger = new StartupLog();
+    const transports = [new CountingQueueServer(), new CountingQueueServer()];
+
+    const worker = createWorker(async () => {
+      const app = await startupApplication(logger);
+
+      for (const strategy of transports) {
+        app.connectMicroservice({ strategy });
+      }
+
+      return app;
+    });
+
+    try {
+      await worker.getApplication();
+
+      expect(transports.map(transport => transport.starts)).toEqual([1, 1]);
+      expect(startupMessages(logger)).toHaveLength(2);
+    } finally {
+      await (await worker.getApplication()).close();
+      Logger.overrideLogger(false);
+    }
+  });
+
+  it('preserves bootstrap startup without duplicate microservice logs', async () => {
+    const logger = new StartupLog();
+    const runtimeLogger = new StartupLog();
+    const transports = [new CountingQueueServer(), new CountingQueueServer()];
+
+    const worker = createWorker(
+      async () => {
+        const app = await startupApplication(logger);
+
+        for (const strategy of transports) {
+          app.connectMicroservice({ strategy });
+        }
+
+        await app.init();
+        await app.startAllMicroservices();
+        await app.listen(0);
+        app.useLogger(runtimeLogger);
+
+        return app;
+      },
+      { microservicesStarted: true },
+    );
+
+    try {
+      await worker.getApplication();
+      await worker.getApplication();
+
+      expect(transports.map(transport => transport.starts)).toEqual([1, 1]);
+      expect(startupMessages(logger)).toHaveLength(2);
+      expect(runtimeLogger.messages).toEqual([]);
+    } finally {
+      await (await worker.getApplication()).close();
+      Logger.overrideLogger(false);
+    }
+  });
+
+  it('dispatches queue events to microservices started by bootstrap', async () => {
+    const logger = new StartupLog();
+    const transport = new CountingQueueServer();
+
+    const worker = createWorker(
+      async () => {
+        const app = await startupApplication(logger);
+
+        app.connectMicroservice({ strategy: transport });
+        await app.startAllMicroservices();
+
+        return app;
+      },
+      { microservicesStarted: true },
+    );
+
+    try {
+      const ctx = createExecutionContext();
+
+      const batch = createMessageBatch('outbox', [
+        {
+          id: 'event',
+          timestamp: new Date(),
+          attempts: 1,
+          body: { value: 42 },
+        },
+      ]);
+
+      await worker.queue(batch, env, ctx);
+
+      const app = await worker.getApplication();
+
+      expect(app.get(EventsController).received).toEqual([{ value: 42 }]);
+
+      expect((await getQueueResult(batch, ctx)).explicitAcks).toEqual([
+        'event',
+      ]);
+
+      expect(transport.starts).toBe(1);
+    } finally {
+      await (await worker.getApplication()).close();
+      Logger.overrideLogger(false);
+    }
   });
 });

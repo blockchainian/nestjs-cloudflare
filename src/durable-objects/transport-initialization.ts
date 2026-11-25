@@ -1,9 +1,11 @@
-import type { INestApplicationContext } from '@nestjs/common';
+import type { INestApplicationContext, InjectionToken } from '@nestjs/common';
 import {
   DiscoveryService,
   MetadataScanner,
   ModulesContainer,
+  Reflector,
 } from '@nestjs/core';
+import type { MessageHandler, MsPattern } from '@nestjs/microservices';
 import {
   PATTERN_METADATA,
   TRANSPORT_METADATA,
@@ -12,55 +14,107 @@ import {
 import { getDurableObjectContextId } from './context.js';
 import type { CloudflareDurableObjectServer } from './server.js';
 
-/** Resolves transport controllers before concurrent events enter Nest's wrappers. */
-export async function initializeTransportControllers(
+export type TransportControllerInitializer = (pattern: string) => Promise<void>;
+
+/** Shares controller resolution only among this object's matching events. */
+export function createTransportControllerInitializer(
   app: INestApplicationContext,
   server: CloudflareDurableObjectServer,
   state: DurableObjectState,
-): Promise<void> {
-  const discovery = new DiscoveryService(app.get(ModulesContainer));
-  const scanner = new MetadataScanner();
-  const contextId = getDurableObjectContextId(state);
+): TransportControllerInitializer {
+  const controllers = discoverTransportControllers(app, server);
+  const resolutions = new Map<InjectionToken, Promise<void>>();
 
-  const tokens = new Set(
-    discovery
-      .getControllers()
-      .filter(controller =>
-        hasTransportHandler(controller.metatype?.prototype, scanner, server),
-      )
-      .map(controller => controller.token),
-  );
+  function resolve(token: InjectionToken): Promise<void> {
+    let resolution = resolutions.get(token);
 
-  app.registerRequestByContextId(contextId.payload, contextId);
+    if (!resolution) {
+      const contextId = getDurableObjectContextId(state);
 
-  await Promise.all(
-    [...tokens].map(token =>
-      app.resolve(token, contextId, { strict: false, each: true }),
-    ),
-  );
-}
+      app.registerRequestByContextId(contextId.payload, contextId);
 
-function hasTransportHandler(
-  prototype: object | undefined,
-  scanner: MetadataScanner,
-  server: CloudflareDurableObjectServer,
-): boolean {
-  if (!prototype) {
-    return false;
-  }
+      resolution = app
+        .resolve(token, contextId, { strict: false, each: true })
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          resolutions.delete(token);
+          throw error;
+        });
 
-  return scanner.getAllMethodNames(prototype).some(name => {
-    const method: unknown = Reflect.get(prototype, name);
-
-    if (typeof method !== 'function') {
-      return false;
+      resolutions.set(token, resolution);
     }
 
-    const transport: unknown = Reflect.getMetadata(TRANSPORT_METADATA, method);
+    return resolution;
+  }
 
-    return (
-      Reflect.hasMetadata(PATTERN_METADATA, method) &&
-      (transport === undefined || transport === server.transportId)
-    );
+  return pattern => {
+    const handler = server.getHandlerByPattern(pattern);
+    const tokens = handler && controllers.get(handler);
+
+    return tokens
+      ? Promise.all(tokens.map(resolve)).then(() => undefined)
+      : Promise.resolve();
+  };
+}
+
+function discoverTransportControllers(
+  app: INestApplicationContext,
+  server: CloudflareDurableObjectServer,
+): Map<MessageHandler, InjectionToken[]> {
+  const discovery = new DiscoveryService(app.get(ModulesContainer));
+  const scanner = new MetadataScanner();
+  const reflector = new Reflector();
+  const controllers = new Map<MessageHandler, InjectionToken[]>();
+
+  for (const controller of discovery.getControllers()) {
+    const prototype: object | undefined = controller.metatype?.prototype;
+
+    if (!prototype) {
+      continue;
+    }
+
+    for (const name of scanner.getAllMethodNames(prototype)) {
+      const method: unknown = Reflect.get(prototype, name);
+
+      for (const handler of getTransportHandlers(method, server, reflector)) {
+        const tokens = handler.isEventHandler
+          ? (controllers.get(handler) ?? [])
+          : [];
+
+        controllers.set(handler, [...new Set([...tokens, controller.token])]);
+      }
+    }
+  }
+
+  return controllers;
+}
+
+function getTransportHandlers(
+  method: unknown,
+  server: CloudflareDurableObjectServer,
+  reflector: Reflector,
+): MessageHandler[] {
+  if (typeof method !== 'function') {
+    return [];
+  }
+
+  const transport = reflector.get<unknown>(TRANSPORT_METADATA, method);
+
+  if (transport !== undefined && transport !== server.transportId) {
+    return [];
+  }
+
+  const patterns = reflector.get<MsPattern[] | undefined>(
+    PATTERN_METADATA,
+    method,
+  );
+
+  return (patterns ?? []).flatMap(pattern => {
+    const route =
+      typeof pattern === 'string' ? pattern : JSON.stringify(pattern);
+
+    const handler = server.getHandlerByPattern(route);
+
+    return handler ? [handler] : [];
   });
 }
