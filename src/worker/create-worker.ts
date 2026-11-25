@@ -77,7 +77,10 @@ export function createWorker<Env = Cloudflare.Env>(
       try {
         validateRouting(app, options);
         await app.init();
-        await app.startAllMicroservices();
+
+        if (!options.microservicesStarted) {
+          await app.startAllMicroservices();
+        }
 
         if (!app.getHttpServer().listening) {
           await app.listen(0);

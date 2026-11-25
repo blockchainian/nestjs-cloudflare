@@ -42,7 +42,23 @@ async function bootstrap() {
 export default createWorker(bootstrap);
 ```
 
-`createWorker` synchronously returns Worker handlers. The first event runs `bootstrap` once, initializes the application, starts connected microservices, and opens its Node HTTP server on an ephemeral port. Later events share the same application. `worker.getApplication()` returns a promise for that application and also starts it when called by a Durable Object.
+`createWorker` synchronously returns Worker handlers. The first event runs `bootstrap` once, initializes the application, starts connected microservices by default, and opens its Node HTTP server on an ephemeral port if it is not already listening. Nest skips initialization when the application is already initialized. Later events share the same application. `worker.getApplication()` returns a promise for that application and also starts it when called by a Durable Object.
+
+If bootstrap calls `await app.startAllMicroservices()`, pass `{ microservicesStarted: true }` to `createWorker` to skip repeating that step. This lets applications finish startup before switching to their runtime logger. Bootstrap must start all connected microservices when this option is enabled; event dispatch remains unchanged.
+
+```ts
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule, { logger: false });
+  await app.init();
+  await app.startAllMicroservices();
+  app.useLogger(app.get(AppLogger));
+  return app;
+}
+
+export default createWorker(bootstrap, { microservicesStarted: true });
+```
+
+`AppLogger` is the application's registered logger provider.
 
 Keep Nest creation inside `bootstrap`. Cloudflare's upload validation runs module initialization without all bindings and disallows I/O and random number generation. Deferring Nest startup to an event avoids those restrictions. Choose HTTP adapters, application options, global guards, pipes, filters, and interceptors in your bootstrap function.
 
@@ -462,7 +478,7 @@ export class JobLease extends CloudflareDurableObject<Env> {
 
 Export the class from the Worker entry point and register it in Wrangler's Durable Object bindings and migrations. This transport uses native Workers RPC and requires a compatibility date of `2024-04-03` or later. It does not expose an HTTP URL. Each message carries Nest's pattern and data to the object's `dispatch` RPC method.
 
-Each object resolves its transport controllers once before dispatching RPC calls or alarms, so cold and warm objects start handlers in arrival order when deserialization, guards, pipes, and interceptors take the same time for each call. Handler awaits can still interleave; custom asynchronous deserializers, guards, pipes, or interceptors with unequal delays can change the start order.
+Each object resolves only the controller matching the RPC or alarm pattern, sharing initialization across concurrent calls to that controller and retrying initialization after a failure. Cold and warm objects start handlers on the same controller in arrival order when deserialization, guards, pipes, and interceptors take the same time for each call. Calls to different controllers on a cold object have no start-order guarantee. Handler awaits can still interleave; custom asynchronous deserializers, guards, pipes, or interceptors with unequal delays can change the start order.
 
 To combine this transport with gateways, use either WebSocket base class with the same initialized application and transport server:
 
