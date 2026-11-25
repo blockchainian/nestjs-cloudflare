@@ -10,6 +10,7 @@ import type { CloudflareWorkerOptions } from '../interfaces/worker-options.inter
 import { CLOUDFLARE_QUEUE_TRANSPORT } from '../queue/constants.js';
 import { CRON_EXPLORER } from '../schedule/constants.js';
 import { CloudflareRequestContext } from './request-context.js';
+import { stripHopByHopHeaders } from './response-headers.js';
 import {
   findWebSocketRoute,
   forwardWebSocketRequest,
@@ -147,9 +148,11 @@ export function createWorker<Env = Cloudflare.Env>(
           );
         }
 
-        return runWithContext(app, { request, env, ctx }, () =>
+        const response = await runWithContext(app, { request, env, ctx }, () =>
           http.fetch!(request, env, ctx),
         );
+
+        return stripHopByHopHeaders(response);
       };
 
       const around = options.around?.fetch;

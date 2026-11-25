@@ -50,6 +50,8 @@ class AuthenticationState {
 }
 
 export { TransportRoom } from './durable-objects/transport-worker.js';
+export { ActiveErrorRoom } from './websockets/error-worker.js';
+export { HibernatingErrorRoom } from './websockets/error-worker.js';
 export { MultiGatewayRoom } from './websockets/multi-path-worker.js';
 export { ActiveTransportRoom } from './websockets/transport-worker.js';
 export { HibernatingTransportRoom } from './websockets/transport-worker.js';
@@ -308,7 +310,21 @@ export {
 } from './durable-objects/controller-initialization-worker.js';
 
 export default {
-  fetch() {
+  fetch(request: Request, bindings: Cloudflare.Env) {
+    const path = new URL(request.url).pathname;
+
+    if (path.startsWith('/socket-error/')) {
+      const [, , host, name] = path.split('/');
+
+      const namespace = (
+        bindings as unknown as Record<string, DurableObjectNamespace>
+      )[host];
+
+      return namespace
+        .getByName(name)
+        .fetch(new Request('https://worker.test/errors', request));
+    }
+
     return new Response('WebSocket test worker');
   },
 };

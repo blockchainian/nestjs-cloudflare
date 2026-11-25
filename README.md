@@ -44,6 +44,8 @@ export default createWorker(bootstrap);
 
 `createWorker` synchronously returns Worker handlers. The first event runs `bootstrap` once, initializes the application, starts connected microservices by default, and opens its Node HTTP server on an ephemeral port if it is not already listening. Nest skips initialization when the application is already initialized. Later events share the same application. `worker.getApplication()` returns a promise for that application and also starts it when called by a Durable Object.
 
+HTTP responses from the Node bridge have connection-specific headers removed under [RFC 9110 section 7.6.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-7.6.1): `Connection`, `Keep-Alive`, `Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`, `Proxy-Authenticate`, `Proxy-Authorization`, and any headers named by `Connection`. Bodies stream through unchanged. Status codes, status text, and other headers, including repeated `Set-Cookie` values, are preserved. Responses with status `101` or a `webSocket`, forwarded Durable Object responses, and application fallback responses are returned unchanged.
+
 If bootstrap calls `await app.startAllMicroservices()`, pass `{ microservicesStarted: true }` to `createWorker` to skip repeating that step. This lets applications finish startup before switching to their runtime logger. Bootstrap must start all connected microservices when this option is enabled; event dispatch remains unchanged.
 
 ```ts
@@ -243,6 +245,8 @@ The default serializer unwraps the record and passes its options to `queue.send`
 
 For dependency injection into the client factory, use `ClientsModule.registerAsync` with `inject: [getBindingToken<Env>('NOTIFICATIONS')]` and return `{ customClass: CloudflareQueueClient, options: { queue } }`. Client and server options accept Nest serializers and deserializers. `emit` sends the Nest event packet, preserving its pattern and metadata. One Queue can carry multiple patterns. `send` rejects because Cloudflare Queues do not support request-response messaging.
 
+`connect()`, `unwrap()`, and `emit()` report a missing or invalid Queue binding with a plain `Error`: `Missing or invalid Queue binding: queue`. Here `queue` names the client option; clients receive the binding value rather than its environment key.
+
 ```ts
 import { Controller } from '@nestjs/common';
 import { InjectBinding } from 'nestjs-cloudflare';
@@ -360,6 +364,8 @@ const worker = createWorker<Env>(bootstrap, {
 
 Each entry selects exact URL pathnames, a Durable Object namespace binding from the event's `env`, and an object name. For a shared API object, use `{ paths: ['/ws', '/mobula'], binding: 'API_WEBSOCKET', object: 'api-websocket' }`. These paths must also be configured on the object's gateway host and declared with `@WebSocketGateway({ path })`. Entries are checked in order; the first matching entry wins. Matching is case-sensitive, distinguishes trailing slashes, ignores query strings, and is independent of Express routing settings.
 
+A missing or invalid namespace binding throws a plain `Error` naming the configured binding, such as `Missing or invalid Durable Object namespace binding: API_WEBSOCKET`. Treat this as a deployment configuration error.
+
 Use `object: request => new URL(request.url).searchParams.get('room') ?? 'default'` to select a name per request. Strings are resolved with the namespace's `idFromName()`. A resolver may instead return a native `DurableObjectId`, such as `object: request => env.CHAT.idFromString(new URL(request.url).searchParams.get('id')!)`.
 
 Forwarding runs inside `around.fetch`, before Express and `fallback.fetch`. The original request, including its URL, headers, and body, goes directly to `namespace.get(id).fetch(request)`. The object's response is returned unchanged, including the WebSocket on a `101` response. Matching non-upgrade requests also go to the object: both gateway hosts return `426` by default, and `CloudflareWebSocketGatewayDurableObject` subclasses can override `nonWebSocketFetch`. `worker.matches(request)` returns `true` for configured paths regardless of method or upgrade headers, without starting Nest or calling the object resolver. Unmatched paths retain the usual Nest and fallback behavior.
@@ -441,7 +447,9 @@ const adapter = new CloudflareWebSocketAdapter({
 });
 ```
 
-A parser can return `undefined` to ignore a frame. The default parser closes malformed JSON messages with code `1007`. A custom parser can throw `InvalidWebSocketMessageException` for that close code; unexpected failures close with `1011`.
+A parser can return `undefined` to ignore a frame. The default parser closes malformed JSON messages with code `1007`. A custom parser can throw `InvalidWebSocketMessageException` for that close code. Unexpected parser failures are logged at error level and discard the frame without closing the connection.
+
+Both hosts follow `@nestjs/platform-ws` for native socket errors: log the error once at error level without initiating a close or choosing a close code. Workers can report a terminal failure through an `error` event or `webSocketError` instead of a close notification. Both hosts therefore invoke the gateway's `handleDisconnect` once on either terminal error or close and release the socket's callbacks and context. A later close notification does not invoke the hook again. Message handler exceptions follow Nest's exception filters instead of this socket error path and do not disconnect the client.
 
 ## Durable Object microservices
 
@@ -572,6 +580,8 @@ const result = await firstValueFrom(client.send('acquire', record));
 ```
 
 Use `{ id: durableObjectId.toString() }` instead of `{ name }` to address an existing ID. Address options stay outside handler data. `ClientsModule.registerAsync` can inject a namespace using `getBindingToken`, as with Queues. `emit` invokes `@EventPattern` handlers and awaits their completion.
+
+`connect()`, `unwrap()`, `send()`, and `emit()` report a missing or invalid namespace with a plain `Error`: `Missing or invalid Durable Object namespace binding: namespace`. Here `namespace` names the client option.
 
 Both client and server accept Nest serializers and deserializers. The default client serializer unwraps records into `{ ...packet, data, options }`; a replacement serializer must preserve that shape to select an object. `send` preserves the payload from `RpcException`, including structured error codes, as the Observable error. Handler Observable replies are collected until completion and returned in order by the RPC call; use finite streams.
 

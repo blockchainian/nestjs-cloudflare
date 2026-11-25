@@ -4,6 +4,8 @@ import { builtinModules } from 'node:module';
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
+import { handleRawWebSocket } from './test/websockets/raw-socket.js';
+
 const manualQueueConsumer = buildSync({
   entryPoints: ['test/fixtures/manual-queue-consumer.ts'],
   bundle: true,
@@ -32,7 +34,11 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: './test/wrangler.jsonc' },
       miniflare: {
-        serviceBindings: { RPC_SERVICE: 'rpc-service' },
+        unsafeDirectSockets: [{ host: '127.0.0.1', port: 0 }],
+        serviceBindings: {
+          RPC_SERVICE: 'rpc-service',
+          RAW_WEBSOCKET: handleRawWebSocket,
+        },
         queueProducers: { MANUAL_OUTBOX: { queueName: 'manual-retry' } },
         workers: [
           {

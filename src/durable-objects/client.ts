@@ -4,6 +4,7 @@ import {
   type WritePacket,
 } from '@nestjs/microservices';
 
+import { getDurableObjectNamespace } from '../bindings/validate-binding.js';
 import type { CloudflareDurableObjectClientOptions } from './interfaces/client-options.interface.js';
 import { CloudflareDurableObjectRecordSerializer } from './record.serializer.js';
 
@@ -22,13 +23,13 @@ export class CloudflareDurableObjectClient extends ClientProxy {
   }
 
   public async connect(): Promise<DurableObjectNamespace> {
-    return this.options.namespace;
+    return this.unwrap<DurableObjectNamespace>();
   }
 
   public close(): void {}
 
   public unwrap<T>(): T {
-    return this.options.namespace as T;
+    return getDurableObjectNamespace(this.options.namespace, 'namespace') as T;
   }
 
   protected publish(

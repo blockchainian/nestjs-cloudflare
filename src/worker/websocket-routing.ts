@@ -1,3 +1,4 @@
+import { getDurableObjectNamespace } from '../bindings/validate-binding.js';
 import type { CloudflareWorkerWebSocketRoute } from '../interfaces/worker-options.interface.js';
 
 export function findWebSocketRoute<Env>(
@@ -14,7 +15,10 @@ export function forwardWebSocketRequest<Env>(
   env: Env,
   route: CloudflareWorkerWebSocketRoute<Env>,
 ): Promise<Response> {
-  const namespace = env[route.binding] as DurableObjectNamespace;
+  const namespace = getDurableObjectNamespace(
+    env[route.binding],
+    route.binding,
+  );
 
   const object =
     typeof route.object === 'function' ? route.object(request) : route.object;
