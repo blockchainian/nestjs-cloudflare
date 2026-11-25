@@ -3,6 +3,7 @@
   "main": "./ws-worker.ts",
   "durable_objects": {
     "bindings": [
+      { "name": "TRANSPORT", "class_name": "TransportRoom" },
       { "name": "NATIVE_SCOPE", "class_name": "NativeScopeRoom" },
       { "name": "HIBERNATING_SCOPE", "class_name": "HibernatingScopeRoom" },
       { "name": "ACTIVE_SCOPE", "class_name": "ActiveScopeRoom" },
@@ -17,6 +18,7 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
+        "TransportRoom",
         "SocketRoom",
         "ParserRoom",
         "GatewayRoom",

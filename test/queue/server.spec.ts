@@ -6,7 +6,7 @@ import {
 } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { from } from 'rxjs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CloudflareQueueContext } from '../../src/queue/context.js';
 import { CloudflareQueueServer } from '../../src/queue/server.js';
@@ -158,6 +158,60 @@ describe('CloudflareQueueServer', () => {
         '0',
         '1',
       ]);
+
+      await module.close();
+    });
+
+    it('should deliver native messages again after their explicit retry delay and discard acknowledged messages', async () => {
+      const queue = env.MANUAL_OUTBOX as Queue;
+
+      await queue.sendBatch([
+        { body: { id: 'locked', action: 'locked' } },
+        { body: { id: 'invalid', action: 'invalid' } },
+        { body: { id: 'valid', action: 'valid' } },
+      ]);
+
+      await vi.waitFor(
+        async () => {
+          const deliveries = await env.STATE.get<number[]>(
+            'manual:locked',
+            'json',
+          );
+
+          expect(deliveries).toHaveLength(2);
+          expect(deliveries![1] - deliveries![0]).toBeGreaterThanOrEqual(1000);
+          expect(await env.STATE.get('manual:invalid', 'json')).toHaveLength(1);
+          expect(await env.STATE.get('manual:valid', 'json')).toHaveLength(1);
+        },
+        { timeout: 5000 },
+      );
+    });
+
+    it('should expose native acknowledgement and retry methods in manual mode', async () => {
+      const { module, strategy } = await server({ noAck: false });
+
+      strategy.addHandler(
+        'inbox',
+        async (data: string, context: CloudflareQueueContext) => {
+          if (data === 'locked') {
+            context.getMessage().retry({ delaySeconds: 30 });
+          } else if (data === 'invalid') {
+            context.getMessage().ack();
+          }
+        },
+        true,
+      );
+
+      const messages = batch('inbox', ['locked', 'invalid', 'pending']);
+      const ctx = createExecutionContext();
+
+      await strategy.consume(messages, ctx);
+      const result = await getQueueResult(messages, ctx);
+
+      expect(result.explicitAcks).toEqual(['1']);
+      expect(result.retryMessages).toEqual([{ msgId: '0' }]);
+      expect(result.ackAll).toBe(false);
+      expect(result.retryBatch).toEqual({ retry: false });
 
       await module.close();
     });

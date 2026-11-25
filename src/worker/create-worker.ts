@@ -9,6 +9,10 @@ import type { CloudflareWorkerOptions } from '../interfaces/worker-options.inter
 import { CLOUDFLARE_QUEUE_TRANSPORT } from '../queue/constants.js';
 import { CRON_EXPLORER } from '../schedule/constants.js';
 import { CloudflareRequestContext } from './request-context.js';
+import {
+  findWebSocketRoute,
+  forwardWebSocketRequest,
+} from './websocket-routing.js';
 
 export {
   CloudflareRequestContext,
@@ -106,6 +110,10 @@ export function createWorker<Env = Cloudflare.Env>(
   ): T => app.get(CloudflareRequestContext).run(value, callback);
 
   const matches = async (request: Request): Promise<boolean> => {
+    if (findWebSocketRoute(request, options.websockets)) {
+      return true;
+    }
+
     await getApplication();
 
     return routeMatcher?.(request).matched ?? false;
@@ -116,6 +124,12 @@ export function createWorker<Env = Cloudflare.Env>(
     matches,
     async fetch(request, env, ctx) {
       const dispatch = async () => {
+        const websocket = findWebSocketRoute(request, options.websockets);
+
+        if (websocket) {
+          return forwardWebSocketRequest(request, env, websocket);
+        }
+
         const app = await getApplication();
         const route = routeMatcher?.(request) ?? { matched: false };
 

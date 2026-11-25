@@ -2,13 +2,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { Injectable } from '@nestjs/common';
 
-type WorkerExecutionContext = ExecutionContext;
+type CloudflareExecutionContext = ExecutionContext | DurableObjectState;
 type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 export interface CloudflareRequestContextValue<Env = unknown> {
   readonly request?: IncomingRequest;
   readonly env: Env;
-  readonly ctx: WorkerExecutionContext;
+  readonly ctx: CloudflareExecutionContext;
   readonly routeError?: URIError;
 }
 
@@ -46,7 +46,7 @@ export class CloudflareRequestContext<Env = unknown> {
     return this.get().env;
   }
 
-  public getExecutionContext(): WorkerExecutionContext {
+  public getExecutionContext(): CloudflareExecutionContext {
     return this.get().ctx;
   }
 

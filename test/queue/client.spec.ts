@@ -4,7 +4,10 @@ import { env } from 'cloudflare:workers';
 import { firstValueFrom } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
-import { CloudflareQueueClient } from '../../src/queue/client.js';
+import {
+  CloudflareQueueClient,
+  CloudflareQueueRecordBuilder,
+} from '../../src/queue/index.js';
 
 /** Records the serialized packet while retaining the real Queue write. */
 class PacketSerializer {
@@ -19,6 +22,42 @@ class PacketSerializer {
 
 describe('CloudflareQueueClient', () => {
   describe('emit', () => {
+    it('should unwrap records and pass native send options to the Queue binding', async () => {
+      const client = new CloudflareQueueClient({ queue: env.OUTBOX });
+
+      const record = new CloudflareQueueRecordBuilder({ id: 'record' })
+        .setData({ id: 'scheduled' })
+        .setOptions({ delaySeconds: 1, contentType: 'json' })
+        .build();
+
+      const started = Date.now();
+
+      await firstValueFrom(client.emit('notice', record));
+
+      await vi.waitFor(
+        async () => {
+          expect(await env.STATE.get('queue:scheduled', 'json')).toEqual({
+            pattern: 'notice',
+            data: { id: 'scheduled' },
+          });
+        },
+        { timeout: 5000 },
+      );
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+
+      await expect(
+        firstValueFrom(
+          client.emit(
+            'notice',
+            new CloudflareQueueRecordBuilder({ id: 'invalid-delay' })
+              .setOptions({ delaySeconds: -1 })
+              .build(),
+          ),
+        ),
+      ).rejects.toThrow();
+    });
+
     it('should register through ClientsModule and serialize normalized patterns with dispatch metadata', async () => {
       const serializer = new PacketSerializer();
 

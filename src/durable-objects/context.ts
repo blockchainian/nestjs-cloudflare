@@ -13,7 +13,7 @@ let installed = false;
 /** Groups durable dependency trees by their owning Durable Object activation. */
 export class DurableObjectContextIdStrategy implements ContextIdStrategy<object> {
   public attach(contextId: ContextId, request: object) {
-    const ctx = owners.get(request);
+    const ctx = owners.get(request) ?? getWrappedOwner(request);
 
     if (!ctx) {
       return;
@@ -69,4 +69,17 @@ export function resolveForDurableObject<T>(
   app.registerRequestByContextId(contextId.payload, contextId);
 
   return app.resolve<T>(token, contextId, { strict: false });
+}
+
+/** Reads the public Nest RequestContext wrapper without depending on Nest internals. */
+function getWrappedOwner(request: object): DurableObjectState | undefined {
+  if (!('getContext' in request) || typeof request.getContext !== 'function') {
+    return;
+  }
+
+  const context: unknown = request.getContext();
+
+  return context !== null && typeof context === 'object'
+    ? owners.get(context)
+    : undefined;
 }

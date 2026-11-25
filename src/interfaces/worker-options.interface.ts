@@ -2,7 +2,7 @@ type WorkerExecutionContext = ExecutionContext;
 type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 /**
- * Configures native event fallbacks when no Nest transport handles an event.
+ * Configures native event dispatch, routing, and fallbacks.
  *
  * @publicApi
  */
@@ -13,6 +13,9 @@ export interface CloudflareWorkerOptions<Env = Cloudflare.Env> {
     scheduled?: CloudflareWorkerAroundScheduled<Env>;
     queue?: CloudflareWorkerAroundQueue<Env>;
   };
+
+  /** Forwards matching paths directly to Durable Objects, including non-upgrade requests. */
+  websockets?: readonly CloudflareWorkerWebSocketRoute<Env>[];
 
   /** Validates Express settings and controls implicit HEAD pre-matching. */
   routing?: {
@@ -65,3 +68,15 @@ export type CloudflareWorkerAroundQueue<Env> = (
   ctx: ExecutionContext,
   next: () => Promise<void>,
 ) => void | Promise<void>;
+
+/** Configures native WebSocket forwarding to one Durable Object. */
+export interface CloudflareWorkerWebSocketRoute<Env = Cloudflare.Env> {
+  /** Exact URL pathnames, independent of Express routing settings. */
+  paths: readonly string[];
+
+  /** Durable Object namespace binding in the event environment. */
+  binding: Extract<keyof Env, string>;
+
+  /** A name for idFromName(), or a request resolver returning a name or native ID. */
+  object: string | ((request: IncomingRequest) => string | DurableObjectId);
+}

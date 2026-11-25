@@ -7,5 +7,6 @@ export { getDurableObjectContextId } from './durable-objects/context.js';
 export { resolveForDurableObject } from './durable-objects/context.js';
 export type { CloudflareWorker } from './interfaces/worker.interface.js';
 export type { CloudflareWorkerOptions } from './interfaces/worker-options.interface.js';
+export type { CloudflareWorkerWebSocketRoute } from './interfaces/worker-options.interface.js';
 export { createWorker } from './worker/create-worker.js';
 export { CloudflareRequestContext } from './worker/request-context.js';

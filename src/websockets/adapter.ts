@@ -10,12 +10,14 @@ import {
 import type { CloudflareWebSocketAdapterOptions } from './interfaces/adapter-options.interface.js';
 import type { CloudflareWebSocketServer } from './interfaces/server.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
+import { WebSocketMessageDispatcher } from './message-dispatcher.js';
 
 type ConnectHandler = (client: WebSocket, request?: Request) => void;
 type DisconnectHandler = (reason?: string) => void;
 type Transform = (data: unknown) => Observable<unknown>;
 
 interface ClientHandlers {
+  dispatcher: WebSocketMessageDispatcher;
   messages: Array<{ handlers: WsMessageHandler[]; transform: Transform }>;
   disconnect: DisconnectHandler[];
 }
@@ -34,6 +36,7 @@ interface ServerHandlers {
 // Durable Objects own native WebSockets and their hibernation callbacks.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
+  private readonly maxConcurrentMessages: number;
   private readonly logger = new Logger(CloudflareWebSocketAdapter.name);
   private readonly servers = new Map<string, ServerHandlers>();
   private readonly aliases = new Map<string, string>();
@@ -51,6 +54,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
    */
   constructor(options: CloudflareWebSocketAdapterOptions = {}) {
     super();
+    this.maxConcurrentMessages = options.maxConcurrentMessages ?? 1000;
     this.messageParser = options.messageParser ?? parseMessage;
     this.messageSerializer = options.messageSerializer ?? JSON.stringify;
   }
@@ -139,7 +143,14 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
 
     const { connect } = this.server(path);
 
-    this.clients.set(socket, { messages: [], disconnect: [] });
+    this.clients.set(socket, {
+      messages: [],
+      disconnect: [],
+      dispatcher: new WebSocketMessageDispatcher(
+        frame => this.dispatchMessage(socket, frame),
+        this.maxConcurrentMessages,
+      ),
+    });
 
     if (context) {
       attachCloudflareWebSocketContext(socket, context);
@@ -153,7 +164,14 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Dispatches a JSON event through Nest and sends every returned value.
    */
-  public async message(
+  public message(
+    socket: WebSocket,
+    frame: string | ArrayBuffer,
+  ): Promise<void> {
+    return this.client(socket).dispatcher.dispatch(frame);
+  }
+
+  private async dispatchMessage(
     socket: WebSocket,
     frame: string | ArrayBuffer,
   ): Promise<void> {
@@ -195,6 +213,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   public disconnect(socket: WebSocket, reason: string): void {
     const handlers = this.client(socket);
 
+    handlers.dispatcher.close();
     this.clients.delete(socket);
     detachCloudflareWebSocketContext(socket);
 

@@ -26,7 +26,33 @@ import {
 } from '../src/websockets/index.js';
 
 @Injectable()
-class EchoService {
+class AuthenticationState {
+  private readonly authenticated = new WeakSet<WebSocket>();
+  private releaseAuthentication?: () => void;
+
+  public async authenticate(socket: WebSocket): Promise<void> {
+    const completion = new Promise<void>(resolve => {
+      this.releaseAuthentication = resolve;
+    });
+
+    socket.send(JSON.stringify({ event: 'authentication-started' }));
+    await completion;
+    this.authenticated.add(socket);
+  }
+
+  public isAuthenticated(socket: WebSocket): boolean {
+    return this.authenticated.has(socket);
+  }
+
+  public release(): void {
+    this.releaseAuthentication?.();
+  }
+}
+
+export { TransportRoom } from './durable-objects/transport-worker.js';
+
+@Injectable()
+class EchoService extends AuthenticationState {
   public disconnects = 0;
 
   public reply(value: string): string {
@@ -44,6 +70,21 @@ class MessageGuard implements CanActivate {
 @WebSocketGateway({ path: '/chat' })
 class EchoGateway {
   constructor(private readonly echo: EchoService) {}
+
+  @SubscribeMessage('authenticate')
+  public async authenticate(@ConnectedSocket() socket: WebSocket) {
+    await this.echo.authenticate(socket);
+
+    return { event: 'authenticated' };
+  }
+
+  @SubscribeMessage('subscribe')
+  public subscribe(@ConnectedSocket() socket: WebSocket) {
+    return {
+      event: 'subscribed',
+      authenticated: this.echo.isAuthenticated(socket),
+    };
+  }
 
   @UseGuards(MessageGuard)
   @SubscribeMessage('echo')
@@ -89,7 +130,10 @@ export class SocketRoom extends CloudflareWebSocketDurableObject {
   private readonly application: Promise<INestApplication>;
 
   constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
-    const adapter = new CloudflareWebSocketAdapter();
+    const adapter = new CloudflareWebSocketAdapter({
+      maxConcurrentMessages: ctx.id.name?.startsWith('serial-') ? 1 : undefined,
+    });
+
     let application: Promise<INestApplication> | undefined;
 
     const getApplication = () =>
@@ -119,6 +163,10 @@ export class SocketRoom extends CloudflareWebSocketDurableObject {
     }
 
     return response;
+  }
+
+  public async release(): Promise<void> {
+    (await this.application).get(EchoService).release();
   }
 
   public async disconnections(): Promise<number> {
@@ -165,6 +213,23 @@ export class ParserRoom extends CloudflareWebSocketDurableObject {
 @WebSocketGateway({ path: '/ws' })
 @WebSocketGateway({ path: '/mobula' })
 class MultiPathGateway {
+  constructor(private readonly authentication: AuthenticationState) {}
+
+  @SubscribeMessage('authenticate')
+  public async authenticate(@ConnectedSocket() socket: WebSocket) {
+    await this.authentication.authenticate(socket);
+
+    return { event: 'authenticated' };
+  }
+
+  @SubscribeMessage('subscribe')
+  public subscribe(@ConnectedSocket() socket: WebSocket) {
+    return {
+      event: 'subscribed',
+      authenticated: this.authentication.isAuthenticated(socket),
+    };
+  }
+
   @SubscribeMessage('broadcast')
   public broadcast(
     @ConnectedSocket() socket: WebSocket,
@@ -189,7 +254,7 @@ class MultiPathGateway {
 
 async function bootstrapMultiPath(adapter: CloudflareWebSocketAdapter) {
   const module = await Test.createTestingModule({
-    providers: [MultiPathGateway],
+    providers: [MultiPathGateway, AuthenticationState],
   }).compile();
 
   const app = module.createNestApplication();
@@ -202,17 +267,28 @@ async function bootstrapMultiPath(adapter: CloudflareWebSocketAdapter) {
 }
 
 export class GatewayRoom extends CloudflareWebSocketGatewayDurableObject {
+  private readonly application: Promise<INestApplication>;
+
+  public async release(): Promise<void> {
+    (await this.application).get(AuthenticationState).release();
+  }
+
   constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
     const adapter = new CloudflareWebSocketAdapter({
+      maxConcurrentMessages: ctx.id.name?.startsWith('serial-') ? 1 : undefined,
       messageSerializer: value =>
         new TextEncoder().encode(JSON.stringify(value)).buffer,
     });
 
+    const application = bootstrapMultiPath(adapter);
+
     super(ctx, bindings, {
       adapter,
       paths: ['/ws', '/mobula'],
-      getApplication: () => bootstrapMultiPath(adapter),
+      getApplication: () => application,
     });
+
+    this.application = application;
   }
 
   protected nonWebSocketFetch(request: Request): Response {
