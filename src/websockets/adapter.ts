@@ -101,10 +101,13 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
     this.server(server.path).connect.push(callback);
   }
 
-  /** Registers an additional path for an already discovered gateway. */
+  /** Registers a fallback path without replacing a discovered gateway. */
   public registerPathAlias(path: string, targetPath: string): void {
     this.server(targetPath);
-    this.aliases.set(path, targetPath);
+
+    if (!this.servers.has(path)) {
+      this.aliases.set(path, targetPath);
+    }
   }
 
   /**
@@ -249,7 +252,9 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   }
 
   private server(path: string): ServerHandlers {
-    const server = this.servers.get(this.aliases.get(path) ?? path);
+    const server =
+      this.servers.get(path) ??
+      this.servers.get(this.aliases.get(path) ?? path);
 
     if (!server) {
       throw new Error(`No Nest WebSocket gateway registered for path: ${path}`);

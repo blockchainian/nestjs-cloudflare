@@ -1,10 +1,10 @@
 import type { InjectionToken } from '@nestjs/common';
-import { DurableObject } from 'cloudflare:workers';
 
 import {
   attachDurableObjectContext,
   resolveForDurableObject,
 } from '../durable-objects/context.js';
+import { CloudflareDurableObjectHost } from '../durable-objects/host.js';
 import type { CloudflareWebSocketDurableObjectOptions } from './interfaces/durable-object-options.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
 
@@ -15,7 +15,7 @@ import { InvalidWebSocketMessageException } from './invalid-message.exception.js
  */
 export abstract class CloudflareWebSocketDurableObject<
   Env = Cloudflare.Env,
-> extends DurableObject<Env> {
+> extends CloudflareDurableObjectHost<Env> {
   private readonly ready: Promise<void>;
   private readonly tag: string;
 
@@ -24,7 +24,7 @@ export abstract class CloudflareWebSocketDurableObject<
     env: Env,
     private readonly options: CloudflareWebSocketDurableObjectOptions,
   ) {
-    super(ctx, env);
+    super(ctx, env, options);
     const tag = `nestjs:${options.path}`;
 
     this.tag = tag;

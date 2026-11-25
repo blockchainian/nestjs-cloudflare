@@ -1,10 +1,10 @@
 import type { InjectionToken } from '@nestjs/common';
-import { DurableObject } from 'cloudflare:workers';
 
 import {
   attachDurableObjectContext,
   resolveForDurableObject,
 } from '../durable-objects/context.js';
+import { CloudflareDurableObjectHost } from '../durable-objects/host.js';
 import type { CloudflareWebSocketContext } from './context.js';
 import type { CloudflareWebSocketGatewayOptions } from './interfaces/gateway-options.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
@@ -12,7 +12,7 @@ import { InvalidWebSocketMessageException } from './invalid-message.exception.js
 /** Hosts Nest gateways with the non-hibernating WebSocket API. */
 export abstract class CloudflareWebSocketGatewayDurableObject<
   Env = Cloudflare.Env,
-> extends DurableObject<Env> {
+> extends CloudflareDurableObjectHost<Env> {
   private readonly ready: Promise<void>;
   private readonly sockets = new Set<WebSocket>();
   private readonly options: CloudflareWebSocketGatewayOptions;
@@ -22,7 +22,7 @@ export abstract class CloudflareWebSocketGatewayDurableObject<
     env: Env,
     options: CloudflareWebSocketGatewayOptions,
   ) {
-    super(ctx, env);
+    super(ctx, env, options);
     this.options = options;
 
     for (const path of options.paths) {

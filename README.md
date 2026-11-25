@@ -286,6 +286,8 @@ export class Greeter extends DurableObject<Env> {
 export default worker;
 ```
 
+For Nest `@MessagePattern` calls through `ClientProxy.send()` and native alarms through `@EventPattern`, use `CloudflareDurableObject` as described in [Durable Object microservices](#durable-object-microservices). Both WebSocket hosts can enable the same transport through their optional `transport` configuration, so one object can serve sockets, RPC messages, and alarms.
+
 Register the service as an application provider. Register `Greeter` in Wrangler's `durable_objects.bindings` and add a SQLite migration, as shown in `example/wrangler.jsonc`. Durable Object storage remains available through the object's own context.
 
 ## WebSockets and hibernation
@@ -357,6 +359,7 @@ For Durable Objects that must keep in-memory sessions, timers, and upstream sock
 ```ts
 import {
   ConnectedSocket,
+  MessageBody,
   SubscribeMessage,
   WebSocketGateway,
 } from '@nestjs/websockets';
@@ -367,7 +370,6 @@ import {
 } from 'nestjs-cloudflare/websockets';
 
 @WebSocketGateway({ path: '/ws' })
-@WebSocketGateway({ path: '/mobula' })
 class ApiGateway {
   @SubscribeMessage('publish')
   publish(@ConnectedSocket() socket: WebSocket, value: unknown): null {
@@ -376,6 +378,14 @@ class ApiGateway {
       peer.send(JSON.stringify(value));
     }
     return null;
+  }
+}
+
+@WebSocketGateway({ path: '/mobula' })
+class MobulaGateway {
+  @SubscribeMessage('subscribe')
+  subscribe(@MessageBody() value: unknown): unknown {
+    return { protocol: 'mobula', data: value };
   }
 }
 
@@ -398,7 +408,9 @@ export class ApiWebSocket extends CloudflareWebSocketGatewayDurableObject<Env> {
 }
 ```
 
-`getCloudflareWebSocketContext(socket)` exposes the owning object's `ctx`, `storage`, `env`, object instance, and in-memory `sockets` set. `messageSerializer` may return a string or `ArrayBuffer`, so binary or protocol-specific frames are supported. The `paths` list lets one Durable Object serve multiple gateway paths; in the example the same gateway handles `/ws` and `/mobula`. Override `nonWebSocketFetch` for the object's other requests.
+`getCloudflareWebSocketContext(socket)` exposes the owning object's `ctx`, `storage`, `env`, object instance, and in-memory `sockets` set. `messageSerializer` may return a string or `ArrayBuffer`, so binary or protocol-specific frames are supported. Register both gateways as application providers. Each path with its own `@WebSocketGateway({ path })` uses that gateway and its message handlers. A path without its own gateway falls back to the first path in `paths`, preserving the single-gateway alias use case. Do not stack `@WebSocketGateway` decorators on one class; declare one class per protocol. The context's `sockets` set contains all connections on the object, so a broadcast through that set reaches every path. Override `nonWebSocketFetch` for the object's other requests.
+
+Both WebSocket hosts also support the optional `transport: { server, alarmPattern? }` configuration shown below. This enables `ClientProxy.send()` and alarm handlers on the same object without internal HTTP endpoints.
 
 Clients send `{"event":"echo","data":"hello"}`. The handler receives `data` and its return value is JSON-serialized directly to the client. Promise and observable results are supported. Configure `messageParser` for another wire protocol:
 
@@ -449,6 +461,25 @@ export class JobLease extends CloudflareDurableObject<Env> {
 ```
 
 Export the class from the Worker entry point and register it in Wrangler's Durable Object bindings and migrations. This transport uses native Workers RPC and requires a compatibility date of `2024-04-03` or later. It does not expose an HTTP URL. Each message carries Nest's pattern and data to the object's `dispatch` RPC method.
+
+To combine this transport with gateways, use either WebSocket base class with the same initialized application and transport server:
+
+```ts
+export class ApiWebSocket extends CloudflareWebSocketGatewayDurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env, {
+      adapter,
+      paths: ['/ws', '/mobula'],
+      getApplication: () => (application ??= bootstrap()),
+      transport: { server: transport, alarmPattern: 'alarm' },
+    });
+  }
+}
+```
+
+For hibernation, extend `CloudflareWebSocketDurableObject` and replace `paths` with `path: '/chat'`. Install the WebSocket adapter with `app.useWebSocketAdapter(adapter)` and connect the transport with `app.connectMicroservice({ strategy: transport })` during the same bootstrap. Initialize the application and start its microservices before returning it. Existing WebSocket configurations without `transport` keep their current behavior.
+
+Both hosts expose the same `dispatch` RPC method as `CloudflareDurableObject` and await `@EventPattern` alarm handlers. `alarmPattern` defaults to `'alarm'`. Address `ClientProxy.send()` to the same object name or ID used by the WebSocket connection. A message handler can inject an object-owned durable provider shared with the gateway to push data to connected clients. For hibernating sockets, use `context.getState().getWebSockets()` and socket attachments to restore subscriptions after wakeup. For non-hibernating sockets, keep connections in that provider and remove them when they close. An `alarm()` override takes precedence; call `await super.alarm()` to retain transport dispatch.
 
 Register handlers as Nest controllers. `@Ctx()` receives the native state, environment, and normalized pattern. Durable providers use the same object isolation described below; ordinary request providers are recreated for each invocation.
 
