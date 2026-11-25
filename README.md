@@ -555,6 +555,12 @@ The package installs `DurableObjectContextIdStrategy` globally through `ContextI
 
 Context ownership is weakly keyed by the native `DurableObjectState`, so an evicted activation does not leave an isolate-wide ID cache behind. Hibernation, eviction, or isolate restart creates a new in-memory provider tree; durable providers do not persist sockets, timers, or JavaScript state across those boundaries. Use non-hibernating hosts when upstream sessions must stay in memory, and use Durable Object storage for persistent state. Nest does not run application lifecycle hooks for request-scoped providers; manage object-owned resources explicitly.
 
+## Publishing
+
+Change the version in `package.json` and merge the change into `main` to publish automatically. The `publish.yml` workflow skips versions already on npm. For an unpublished version, it installs dependencies with `yarn.lock`, runs `yarn lint`, `yarn test:types`, and `yarn test`, then runs `npm publish --access public`. The `prepublishOnly` script builds the package.
+
+Configure npm Trusted Publishing for `blockchainian/nestjs-cloudflare` with workflow filename `publish.yml`. Publishing uses GitHub Actions OIDC without npm tokens or secrets. After configuring npm, you can manually run the workflow on `main` to publish the current version.
+
 ## Build and local development
 
 Compile application TypeScript with `experimentalDecorators` and `emitDecoratorMetadata` before Wrangler bundles the emitted JavaScript. Wrangler's esbuild compilation does not emit the metadata Nest needs for dependency injection. Enable `nodejs_compat` and `enable_nodejs_http_server_modules` for Node HTTP support.
