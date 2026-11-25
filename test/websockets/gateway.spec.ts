@@ -1,7 +1,9 @@
+import type { DurableObject } from 'cloudflare:workers';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
 import { type GatewayRoom } from '../ws-worker.js';
+import type { MultiGatewayRoom } from './multi-path-worker.js';
 
 function nextMessage(socket: WebSocket): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -13,8 +15,8 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
-async function connect(
-  namespace: DurableObjectNamespace<GatewayRoom>,
+async function connect<T extends DurableObject>(
+  namespace: DurableObjectNamespace<T>,
   name: string,
   path: string,
 ) {
@@ -78,5 +80,46 @@ describe('CloudflareWebSocketGatewayDurableObject', () => {
     const response = await stub.fetch('https://worker.test/health');
 
     expect(await response.text()).toBe('custom:/health');
+  });
+});
+
+describe('Independent gateway paths', () => {
+  const namespace =
+    env.MULTI_GATEWAY as DurableObjectNamespace<MultiGatewayRoom>;
+
+  it('routes each path to its own gateway before falling back to an alias', async () => {
+    const connections = await Promise.all(
+      ['/ws', '/mobula', '/alias'].map(path =>
+        connect(namespace, 'protocols', path),
+      ),
+    );
+
+    const frames: unknown[][] = connections.map(() => []);
+
+    connections.forEach(({ socket }, index) => {
+      socket.addEventListener('message', event => {
+        frames[index].push(JSON.parse(String(event.data)) as unknown);
+      });
+    });
+
+    try {
+      for (const [index, { socket }] of connections.entries()) {
+        const reply = nextMessage(socket);
+
+        socket.send(
+          JSON.stringify({ event: 'echo', data: `message:${index}` }),
+        );
+
+        await reply;
+      }
+
+      expect(frames).toEqual([
+        [{ protocol: 'ws', data: 'message:0' }],
+        [{ protocol: 'mobula', data: 'message:1' }],
+        [{ protocol: 'ws', data: 'message:2' }],
+      ]);
+    } finally {
+      connections.forEach(({ socket }) => socket.close());
+    }
   });
 });

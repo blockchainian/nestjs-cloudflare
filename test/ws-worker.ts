@@ -50,6 +50,9 @@ class AuthenticationState {
 }
 
 export { TransportRoom } from './durable-objects/transport-worker.js';
+export { MultiGatewayRoom } from './websockets/multi-path-worker.js';
+export { ActiveTransportRoom } from './websockets/transport-worker.js';
+export { HibernatingTransportRoom } from './websockets/transport-worker.js';
 
 @Injectable()
 class EchoService extends AuthenticationState {
@@ -211,7 +214,6 @@ export class ParserRoom extends CloudflareWebSocketDurableObject {
 }
 
 @WebSocketGateway({ path: '/ws' })
-@WebSocketGateway({ path: '/mobula' })
 class MultiPathGateway {
   constructor(private readonly authentication: AuthenticationState) {}
 

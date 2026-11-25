@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 
+import type { CloudflareDurableObjectOptions } from '../../durable-objects/interfaces/server-options.interface.js';
 import type { CloudflareWebSocketAdapter } from '../adapter.js';
 
 /**
@@ -13,6 +14,9 @@ export interface CloudflareWebSocketDurableObjectOptions {
 
   /** Path declared by the gateway's WebSocketGateway options. */
   path: string;
+
+  /** Enables native RPC messages and alarm events on this gateway host. */
+  transport?: Omit<CloudflareDurableObjectOptions, 'getApplication'>;
 
   /** Starts or retrieves the initialized Nest application. */
   getApplication: () => Promise<INestApplication>;
