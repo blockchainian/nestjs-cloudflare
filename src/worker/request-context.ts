@@ -9,6 +9,7 @@ export interface CloudflareRequestContextValue<Env = unknown> {
   readonly request?: IncomingRequest;
   readonly env: Env;
   readonly ctx: WorkerExecutionContext;
+  readonly routeError?: URIError;
 }
 
 /** Provides the native event values for the current Nest invocation. */
@@ -47,5 +48,9 @@ export class CloudflareRequestContext<Env = unknown> {
 
   public getExecutionContext(): WorkerExecutionContext {
     return this.get().ctx;
+  }
+
+  public getRouteError(): URIError | undefined {
+    return this.get().routeError;
   }
 }

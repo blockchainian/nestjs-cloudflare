@@ -14,10 +14,13 @@ export interface CloudflareWorkerOptions<Env = Cloudflare.Env> {
     queue?: CloudflareWorkerAroundQueue<Env>;
   };
 
-  /** Controls the Express router's path matching behavior. */
+  /** Validates Express settings and controls implicit HEAD pre-matching. */
   routing?: {
     caseSensitive?: boolean;
     strict?: boolean;
+
+    /** Allows HEAD to pre-match GET routes. Defaults to true. */
+    headImplicitMatch?: boolean;
     caseSensitiveRouting?: boolean;
     strictRouting?: boolean;
   };

@@ -49,7 +49,7 @@ export function createWorker<Env = Cloudflare.Env>(
   const logger = new Logger('CloudflareWorker');
   let application: Promise<INestApplication> | undefined;
   let http: ReturnType<typeof httpServerHandler>;
-  let routeMatcher: ((request: Request) => boolean) | undefined;
+  let routeMatcher: ((request: Request) => RouteMatch) | undefined;
 
   const getApplication = (): Promise<INestApplication> => {
     if (application) {
@@ -70,7 +70,7 @@ export function createWorker<Env = Cloudflare.Env>(
       }
 
       try {
-        configureRouting(app, options);
+        validateRouting(app, options);
         await app.init();
         await app.startAllMicroservices();
 
@@ -79,7 +79,7 @@ export function createWorker<Env = Cloudflare.Env>(
         }
 
         http = httpServerHandler(app.getHttpServer());
-        routeMatcher = createRouteMatcher(app);
+        routeMatcher = createRouteMatcher(app, options);
 
         return app;
       } catch (error) {
@@ -108,7 +108,7 @@ export function createWorker<Env = Cloudflare.Env>(
   const matches = async (request: Request): Promise<boolean> => {
     await getApplication();
 
-    return routeMatcher?.(request) ?? false;
+    return routeMatcher?.(request).matched ?? false;
   };
 
   return {
@@ -117,10 +117,16 @@ export function createWorker<Env = Cloudflare.Env>(
     async fetch(request, env, ctx) {
       const dispatch = async () => {
         const app = await getApplication();
-        const matched = routeMatcher?.(request) ?? false;
+        const route = routeMatcher?.(request) ?? { matched: false };
 
-        if (!matched && options.fallback?.fetch) {
-          return options.fallback.fetch(request, env, ctx);
+        const fallback = options.fallback?.fetch;
+
+        if (!route.matched && fallback) {
+          return runWithContext(
+            app,
+            { request, env, ctx, routeError: route.routeError },
+            () => fallback(request, env, ctx),
+          );
         }
 
         return runWithContext(app, { request, env, ctx }, () =>
@@ -234,65 +240,112 @@ export function createWorker<Env = Cloudflare.Env>(
   };
 }
 
-function configureRouting<Env>(
+function validateRouting<Env>(
   app: INestApplication,
   options: CloudflareWorkerOptions<Env>,
 ): void {
-  const adapter = app.getHttpAdapter();
-
-  const instance = adapter.getInstance() as {
-    set?: (name: string, value: boolean) => void;
+  const instance = app.getHttpAdapter().getInstance() as {
+    enabled(name: string): boolean;
   };
 
-  const caseSensitive =
-    options.routing?.caseSensitive ?? options.routing?.caseSensitiveRouting;
+  const settings = [
+    [
+      'case sensitive routing',
+      options.routing?.caseSensitive ?? options.routing?.caseSensitiveRouting,
+    ],
+    [
+      'strict routing',
+      options.routing?.strict ?? options.routing?.strictRouting,
+    ],
+  ] as const;
 
-  const strict = options.routing?.strict ?? options.routing?.strictRouting;
-
-  if (caseSensitive !== undefined) {
-    instance.set?.('case sensitive routing', caseSensitive);
-  }
-
-  if (strict !== undefined) {
-    instance.set?.('strict routing', strict);
+  for (const [name, expected] of settings) {
+    if (expected !== undefined && instance.enabled(name) !== expected) {
+      throw new Error(
+        `Configure Express with instance.set('${name}', ${expected}) before passing it to new ExpressAdapter(instance) in bootstrap`,
+      );
+    }
   }
 }
 
-function createRouteMatcher(
+function createRouteMatcher<Env>(
   app: INestApplication,
-): (request: Request) => boolean {
+  options: CloudflareWorkerOptions<Env>,
+): (request: Request) => RouteMatch {
   const instance = app.getHttpAdapter().getInstance() as {
     _router?: { stack?: ExpressLayer[] };
     router?: { stack?: ExpressLayer[] };
   };
 
   const stack = instance._router?.stack ?? instance.router?.stack ?? [];
+  const headImplicitMatch = options.routing?.headImplicitMatch ?? true;
 
   return request => {
     const url = new URL(request.url);
 
-    return stack.some(layer => {
-      if (!layer.route || !layer.match(url.pathname)) {
-        return false;
+    for (const layer of stack) {
+      if (!layer.route) {
+        continue;
       }
 
-      if (layer.route._handles_method) {
-        return layer.route._handles_method(request.method);
+      let pathMatches: boolean;
+
+      try {
+        pathMatches = layer.match(url.pathname);
+      } catch (error) {
+        if (error instanceof URIError) {
+          return { matched: false, routeError: error };
+        }
+
+        throw error;
       }
 
-      const method = request.method.toLowerCase();
+      if (!pathMatches) {
+        continue;
+      }
 
-      return Boolean(
-        layer.route.methods?.[method] ||
-        (method === 'head' && layer.route.methods?.get),
-      );
-    });
+      if (matchesMethod(layer.route, request.method, headImplicitMatch)) {
+        return { matched: true };
+      }
+    }
+
+    return { matched: false };
   };
+}
+
+function matchesMethod(
+  route: NonNullable<ExpressLayer['route']>,
+  method: string,
+  headImplicitMatch: boolean,
+): boolean {
+  const name = method.toLowerCase();
+
+  if (name === 'head' && !headImplicitMatch) {
+    return Boolean(route.methods?.head);
+  }
+
+  const handlesMethod = route._handlesMethod ?? route._handles_method;
+
+  if (handlesMethod) {
+    return handlesMethod.call(route, method);
+  }
+
+  return Boolean(
+    route.methods?._all ||
+    route.methods?.[name] ||
+    (name === 'head' && route.methods?.get),
+  );
+}
+
+interface RouteMatch {
+  matched: boolean;
+  routeError?: URIError;
 }
 
 interface ExpressLayer {
   route?: {
     _handles_method?: (method: string) => boolean;
+    _handlesMethod?: (method: string) => boolean;
     methods?: Record<string, boolean>;
   };
   match(path: string): boolean;

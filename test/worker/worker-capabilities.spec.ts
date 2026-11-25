@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 
 import type { INestApplication } from '@nestjs/common';
-import { Controller, Get, Injectable } from '@nestjs/common';
+import { Controller, Get, Head, Injectable } from '@nestjs/common';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import {
@@ -12,6 +12,7 @@ import {
   waitOnExecutionContext,
 } from 'cloudflare:test';
 import { env, withEnv } from 'cloudflare:workers';
+import express from 'express';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -22,6 +23,7 @@ import {
 
 async function application(
   metadata: Record<string, unknown> = {},
+  settings: Record<string, boolean> = {},
 ): Promise<INestApplication> {
   return withEnv(
     { DATABASE: env.DATABASE, STATE: env.STATE, OUTBOX: env.OUTBOX },
@@ -31,7 +33,13 @@ async function application(
         ...metadata,
       }).compile();
 
-      return module.createNestApplication(new ExpressAdapter(), {
+      const instance = express();
+
+      for (const [name, value] of Object.entries(settings)) {
+        instance.set(name, value);
+      }
+
+      return module.createNestApplication(new ExpressAdapter(instance), {
         logger: false,
       });
     },
@@ -45,6 +53,241 @@ function incoming(
 }
 
 describe('worker capabilities', () => {
+  it.each([true, false])(
+    'respects case sensitive routing with fallback %s',
+    async useFallback => {
+      @Controller()
+      class Routes {
+        @Get('health')
+        health() {
+          return 'nest';
+        }
+      }
+
+      const worker = createWorker(
+        () =>
+          application(
+            { controllers: [Routes] },
+            { 'case sensitive routing': true },
+          ),
+        {
+          routing: { caseSensitive: true },
+          fallback: useFallback
+            ? { fetch: () => new Response('fallback', { status: 404 }) }
+            : undefined,
+        },
+      );
+
+      const response = await worker.fetch(
+        incoming(new Request('https://worker.test/HEALTH')),
+        env,
+        createExecutionContext(),
+      );
+
+      expect(response.status).toBe(404);
+
+      if (useFallback) {
+        expect(await response.text()).toBe('fallback');
+      } else {
+        expect(await response.json()).toMatchObject({ statusCode: 404 });
+      }
+
+      await (await worker.getApplication()).close();
+    },
+  );
+
+  it.each([true, false])(
+    'respects strict routing with fallback %s',
+    async useFallback => {
+      @Controller()
+      class Routes {
+        @Get('health')
+        health() {
+          return 'nest';
+        }
+      }
+
+      const worker = createWorker(
+        () =>
+          application({ controllers: [Routes] }, { 'strict routing': true }),
+        {
+          routing: { strict: true },
+          fallback: useFallback
+            ? { fetch: () => new Response('fallback', { status: 404 }) }
+            : undefined,
+        },
+      );
+
+      const response = await worker.fetch(
+        incoming(new Request('https://worker.test/health/')),
+        env,
+        createExecutionContext(),
+      );
+
+      expect(response.status).toBe(404);
+
+      if (useFallback) {
+        expect(await response.text()).toBe('fallback');
+      } else {
+        expect(await response.json()).toMatchObject({ statusCode: 404 });
+      }
+
+      await (await worker.getApplication()).close();
+    },
+  );
+
+  it('can require an explicit HEAD route during pre-matching', async () => {
+    @Controller()
+    class Routes {
+      @Head('explicit')
+      explicit() {
+        return 'explicit';
+      }
+
+      @Get('explicit')
+      explicitGet() {
+        return 'get';
+      }
+
+      @Get('health')
+      health() {
+        return 'nest';
+      }
+    }
+
+    const worker = createWorker(() => application({ controllers: [Routes] }), {
+      routing: { headImplicitMatch: false },
+      fallback: { fetch: () => new Response('fallback', { status: 404 }) },
+    });
+
+    const response = await worker.fetch(
+      incoming(new Request('https://worker.test/health', { method: 'HEAD' })),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('fallback');
+
+    expect(
+      await worker.matches(
+        incoming(new Request('https://worker.test/health', { method: 'HEAD' })),
+      ),
+    ).toBe(false);
+
+    const explicitRequest = incoming(
+      new Request('https://worker.test/explicit', { method: 'HEAD' }),
+    );
+
+    expect(await worker.matches(explicitRequest)).toBe(true);
+
+    const explicitResponse = await worker.fetch(
+      explicitRequest,
+      env,
+      createExecutionContext(),
+    );
+
+    expect(explicitResponse.status).toBe(200);
+    expect(await explicitResponse.text()).toBe('');
+
+    await (await worker.getApplication()).close();
+  });
+
+  it('preserves permissive path matching and implicit HEAD by default', async () => {
+    @Controller()
+    class Routes {
+      @Get('health')
+      health() {
+        return 'nest';
+      }
+    }
+
+    const worker = createWorker(() => application({ controllers: [Routes] }), {
+      fallback: { fetch: () => new Response('fallback', { status: 404 }) },
+    });
+
+    for (const request of [
+      new Request('https://worker.test/HEALTH'),
+      new Request('https://worker.test/health/'),
+      new Request('https://worker.test/health', { method: 'HEAD' }),
+    ]) {
+      expect(await worker.matches(incoming(request))).toBe(true);
+
+      const response = await worker.fetch(
+        incoming(request),
+        env,
+        createExecutionContext(),
+      );
+
+      expect(response.status).toBe(200);
+
+      expect(await response.text()).toBe(
+        request.method === 'HEAD' ? '' : 'nest',
+      );
+    }
+
+    await (await worker.getApplication()).close();
+  });
+
+  it.each([
+    { caseSensitive: true },
+    { strict: true },
+    { caseSensitiveRouting: true },
+    { strictRouting: true },
+  ])(
+    'rejects routing expectations missing from Express settings: %j',
+    async routing => {
+      const worker = createWorker(() => application(), { routing });
+
+      await expect(worker.getApplication()).rejects.toThrow(
+        'before passing it to new ExpressAdapter(instance) in bootstrap',
+      );
+    },
+  );
+
+  it('passes malformed route encoding to fallback through request context', async () => {
+    @Controller()
+    class Routes {
+      @Get('admin/users/:id/stats')
+      stats() {
+        return 'nest';
+      }
+    }
+
+    let app: INestApplication | undefined;
+    let routeError: URIError | undefined;
+
+    const worker = createWorker(
+      async () => {
+        app = await application({ controllers: [Routes] });
+
+        return app;
+      },
+      {
+        fallback: {
+          fetch: () => {
+            routeError = app?.get(CloudflareRequestContext).getRouteError();
+
+            return new Response('fallback');
+          },
+        },
+      },
+    );
+
+    const response = await worker.fetch(
+      incoming(new Request('https://worker.test/admin/users/%E0%A4%A/stats')),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('fallback');
+    expect(routeError).toBeInstanceOf(URIError);
+    expect(routeError?.message).toContain('Failed to decode param');
+
+    await (await worker.getApplication()).close();
+  });
+
   it('routes unmatched requests to fallback without reading the body', async () => {
     @Controller()
     class Routes {

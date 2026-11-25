@@ -49,19 +49,50 @@ Keep Nest creation inside `bootstrap`. Cloudflare's upload validation runs modul
 For incremental HTTP migration, pass a native fallback. `fetch` checks the initialized Express route table before dispatch and leaves unmatched request bodies untouched:
 
 ```ts
+import { CloudflareRequestContext } from 'nestjs-cloudflare';
+
 const worker = createWorker(bootstrap, {
   fallback: {
-    fetch(request, env, ctx) {
+    async fetch(request, env, ctx) {
+      const app = await worker.getApplication();
+      const error = app.get(CloudflareRequestContext).getRouteError();
+      if (error) return new Response('Invalid route encoding', { status: 400 });
       return legacyRouter.fetch(request, env, ctx);
     },
   },
-  routing: { caseSensitive: true, strict: true },
+  routing: { headImplicitMatch: false },
 });
 
 await worker.matches(request); // true when Nest owns the method and path
 ```
 
-Use `around.fetch`, `around.scheduled`, or `around.queue` to wrap complete event dispatch. Each hook receives the native event values and a `next` function. `CloudflareRequestContext` is a singleton provider exported by `CloudflareModule.forRoot()`; inject it to read `getRequest()`, `getEnv()`, and `getExecutionContext()` from the current event.
+Configure Express before constructing the Nest adapter so its router uses the
+same settings during pre-matching and dispatch:
+
+```ts
+import express from 'express';
+import { ExpressAdapter } from '@nestjs/platform-express';
+
+async function bootstrap() {
+  const instance = express();
+  instance.set('case sensitive routing', true);
+  instance.set('strict routing', true);
+  return NestFactory.create(AppModule, new ExpressAdapter(instance));
+}
+```
+
+The optional `routing.caseSensitive` and `routing.strict` values validate these
+Express settings. Their aliases are `caseSensitiveRouting` and `strictRouting`.
+A mismatch fails startup with instructions to configure Express before creating
+the adapter. They do not change an existing router. Omit them to use the
+bootstrap settings. The default Express configuration remains case-insensitive
+and accepts trailing slashes.
+
+Set `routing.headImplicitMatch: false` when a `HEAD` request should match only
+an explicitly registered `HEAD` route. Unmatched requests go to `fallback.fetch`.
+The default preserves Express's implicit `GET` handling.
+
+Use `around.fetch`, `around.scheduled`, or `around.queue` to wrap complete event dispatch. Each hook receives the native event values and a `next` function. `CloudflareRequestContext` is a singleton provider exported by `CloudflareModule.forRoot()`; inject it to read `getRequest()`, `getEnv()`, `getExecutionContext()`, and `getRouteError()` from the current event. When Express cannot decode a route parameter, pre-matching sends the request to `fallback.fetch` and `getRouteError()` returns the `URIError`.
 
 ## Bindings
 
