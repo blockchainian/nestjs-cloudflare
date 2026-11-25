@@ -1,7 +1,16 @@
 import 'reflect-metadata';
 
 import type { INestApplication } from '@nestjs/common';
-import { Controller, Get, Head, Injectable } from '@nestjs/common';
+import {
+  ConsoleLogger,
+  Controller,
+  Get,
+  Head,
+  Injectable,
+  Logger,
+  Module,
+} from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import {
@@ -52,7 +61,98 @@ function incoming(
   return request as Request<unknown, IncomingRequestCfProperties>;
 }
 
+class ErrorLog extends ConsoleLogger {
+  readonly errors: unknown[] = [];
+
+  constructor() {
+    super({ logLevels: ['error'] });
+  }
+
+  override error(message: unknown, ...optionalParams: unknown[]) {
+    this.errors.push(message);
+    super.error(message, ...optionalParams);
+  }
+}
+
+@Module({ imports: [CloudflareModule.forRoot()] })
+class FallbackModule {}
+
+async function fallbackApplication(
+  logger: ErrorLog,
+): Promise<INestApplication> {
+  return withEnv(
+    { DATABASE: env.DATABASE, STATE: env.STATE, OUTBOX: env.OUTBOX },
+    () =>
+      NestFactory.create(FallbackModule, new ExpressAdapter(), {
+        logger,
+        abortOnError: false,
+      }),
+  ) as Promise<INestApplication>;
+}
+
 describe('worker capabilities', () => {
+  it('calls scheduled fallback without error logs when the schedule module is absent', async () => {
+    const logger = new ErrorLog();
+    const seen: string[] = [];
+
+    const worker = createWorker(() => fallbackApplication(logger), {
+      fallback: {
+        scheduled(controller) {
+          seen.push(controller.cron);
+        },
+      },
+    });
+
+    try {
+      const ctx = createExecutionContext();
+
+      await worker.scheduled(
+        createScheduledController({ cron: '0 0 * * *' }),
+        env,
+        ctx,
+      );
+
+      await waitOnExecutionContext(ctx);
+
+      expect(seen).toEqual(['0 0 * * *']);
+      expect(logger.errors).toEqual([]);
+    } finally {
+      await (await worker.getApplication()).close();
+      Logger.overrideLogger(false);
+    }
+  });
+
+  it('calls queue fallback without error logs when no queue transport is connected', async () => {
+    const logger = new ErrorLog();
+    const seen: string[] = [];
+
+    const worker = createWorker(() => fallbackApplication(logger), {
+      fallback: {
+        queue(batch) {
+          seen.push(batch.queue);
+          batch.ackAll();
+        },
+      },
+    });
+
+    try {
+      const ctx = createExecutionContext();
+
+      const batch = createMessageBatch('events', [
+        { id: 'event', timestamp: new Date(), attempts: 1, body: {} },
+      ]);
+
+      await worker.queue(batch, env, ctx);
+
+      expect((await getQueueResult(batch, ctx)).ackAll).toBe(true);
+      expect(seen).toEqual(['events']);
+      expect(logger.errors).toEqual([]);
+    } finally {
+      await (await worker.getApplication()).close();
+      Logger.overrideLogger(false);
+    }
+  });
+
   it.each([true, false])(
     'respects case sensitive routing with fallback %s',
     async useFallback => {

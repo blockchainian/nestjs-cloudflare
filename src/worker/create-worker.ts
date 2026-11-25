@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 
 import { type INestApplication, Logger } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { httpServerHandler } from 'cloudflare:node';
 
 import { CLOUDFLARE_ENV } from '../constants.js';
@@ -155,10 +156,14 @@ export function createWorker<Env = Cloudflare.Env>(
     async scheduled(controller, env, ctx) {
       const dispatch = async () => {
         const app = await getApplication();
+        const moduleRef = app.get(ModuleRef);
         let scheduled: ScheduledDispatcher | undefined;
 
         try {
-          scheduled = app.get<ScheduledDispatcher>(CRON_EXPLORER);
+          // ModuleRef lookups bypass the application's logging exception proxy.
+          scheduled = moduleRef.get<ScheduledDispatcher>(CRON_EXPLORER, {
+            strict: false,
+          });
         } catch {
           // The schedule integration is optional for applications without cron handlers.
         }
