@@ -2,6 +2,11 @@ import { Logger, type WsMessageHandler } from '@nestjs/common';
 import { AbstractWsAdapter } from '@nestjs/websockets';
 import { lastValueFrom, type Observable, tap } from 'rxjs';
 
+import {
+  attachCloudflareWebSocketContext,
+  type CloudflareWebSocketContext,
+  detachCloudflareWebSocketContext,
+} from './context.js';
 import type { CloudflareWebSocketAdapterOptions } from './interfaces/adapter-options.interface.js';
 import type { CloudflareWebSocketServer } from './interfaces/server.interface.js';
 import { InvalidWebSocketMessageException } from './invalid-message.exception.js';
@@ -31,10 +36,14 @@ interface ServerHandlers {
 export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   private readonly logger = new Logger(CloudflareWebSocketAdapter.name);
   private readonly servers = new Map<string, ServerHandlers>();
+  private readonly aliases = new Map<string, string>();
   private readonly clients = new WeakMap<WebSocket, ClientHandlers>();
 
   private readonly messageParser: NonNullable<
     CloudflareWebSocketAdapterOptions['messageParser']
+  >;
+  private readonly messageSerializer: NonNullable<
+    CloudflareWebSocketAdapterOptions['messageSerializer']
   >;
 
   /**
@@ -43,6 +52,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   constructor(options: CloudflareWebSocketAdapterOptions = {}) {
     super();
     this.messageParser = options.messageParser ?? parseMessage;
+    this.messageSerializer = options.messageSerializer ?? JSON.stringify;
   }
 
   /**
@@ -87,6 +97,12 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
     this.server(server.path).connect.push(callback);
   }
 
+  /** Registers an additional path for an already discovered gateway. */
+  public registerPathAlias(path: string, targetPath: string): void {
+    this.server(targetPath);
+    this.aliases.set(path, targetPath);
+  }
+
   /**
    * Registers Nest's disconnection callback for a native socket.
    */
@@ -111,7 +127,12 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
   /**
    * Binds a connection or a restored socket through Nest's gateway pipeline.
    */
-  public connect(path: string, socket: WebSocket, request?: Request): void {
+  public connect(
+    path: string,
+    socket: WebSocket,
+    request?: Request,
+    context?: CloudflareWebSocketContext<unknown, unknown>,
+  ): void {
     if (this.clients.has(socket)) {
       return;
     }
@@ -119,6 +140,10 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
     const { connect } = this.server(path);
 
     this.clients.set(socket, { messages: [], disconnect: [] });
+
+    if (context) {
+      attachCloudflareWebSocketContext(socket, context);
+    }
 
     for (const callback of connect) {
       callback(socket, request);
@@ -153,7 +178,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
                     result !== null &&
                     socket.readyState === WebSocket.OPEN
                   ) {
-                    socket.send(JSON.stringify(result));
+                    socket.send(this.messageSerializer(result));
                   }
                 }),
               ),
@@ -171,6 +196,7 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
     const handlers = this.client(socket);
 
     this.clients.delete(socket);
+    detachCloudflareWebSocketContext(socket);
 
     for (const callback of handlers.disconnect) {
       callback(reason);
@@ -200,10 +226,11 @@ export class CloudflareWebSocketAdapter extends AbstractWsAdapter<any, any> {
    */
   public async dispose(): Promise<void> {
     this.servers.clear();
+    this.aliases.clear();
   }
 
   private server(path: string): ServerHandlers {
-    const server = this.servers.get(path);
+    const server = this.servers.get(this.aliases.get(path) ?? path);
 
     if (!server) {
       throw new Error(`No Nest WebSocket gateway registered for path: ${path}`);

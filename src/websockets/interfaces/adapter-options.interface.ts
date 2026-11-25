@@ -10,4 +10,7 @@ export interface CloudflareWebSocketAdapterOptions {
   messageParser?: (
     data: string | ArrayBuffer,
   ) => CloudflareWebSocketMessage | void;
+
+  /** Serializes values returned by gateway handlers before sending them. */
+  messageSerializer?: (data: unknown) => string | ArrayBuffer;
 }

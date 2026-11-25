@@ -19,6 +19,9 @@ export interface CloudflareWorker<Env = Cloudflare.Env> {
     ctx: WorkerExecutionContext,
   ): Promise<Response>;
 
+  /** Reports whether Express has a route for a request without consuming its body. */
+  matches(request: IncomingRequest): Promise<boolean>;
+
   /** Dispatches an event to registered Nest cron methods or the native fallback. */
   scheduled(
     controller: ScheduledController,

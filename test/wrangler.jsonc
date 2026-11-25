@@ -5,12 +5,14 @@
     "bindings": [
       { "name": "ROOM", "class_name": "SocketRoom" },
       { "name": "PARSER_ROOM", "class_name": "ParserRoom" },
+      { "name": "GATEWAY_ROOM", "class_name": "GatewayRoom" },
+      { "name": "SECOND_GATEWAY_ROOM", "class_name": "GatewayRoom" },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["SocketRoom", "ParserRoom"],
+      "new_sqlite_classes": ["SocketRoom", "ParserRoom", "GatewayRoom"],
     },
   ],
   "compatibility_date": "2026-08-22",

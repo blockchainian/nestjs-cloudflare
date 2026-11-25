@@ -20,6 +20,8 @@ import { of } from 'rxjs';
 import {
   CloudflareWebSocketAdapter,
   CloudflareWebSocketDurableObject,
+  CloudflareWebSocketGatewayDurableObject,
+  getCloudflareWebSocketContext,
   InvalidWebSocketMessageException,
 } from '../src/websockets/index.js';
 
@@ -157,6 +159,64 @@ export class ParserRoom extends CloudflareWebSocketDurableObject {
       path: '/chat',
       getApplication: () => bootstrap(adapter),
     });
+  }
+}
+
+@WebSocketGateway({ path: '/ws' })
+@WebSocketGateway({ path: '/mobula' })
+class MultiPathGateway {
+  @SubscribeMessage('broadcast')
+  public broadcast(
+    @ConnectedSocket() socket: WebSocket,
+    @MessageBody() value: string,
+  ) {
+    const context = getCloudflareWebSocketContext(socket);
+
+    for (const peer of context.sockets) {
+      peer.send(`frame:${value}:${context.ctx.id.toString()}`);
+    }
+
+    return null;
+  }
+
+  @SubscribeMessage('state')
+  public state(@ConnectedSocket() socket: WebSocket) {
+    const context = getCloudflareWebSocketContext(socket);
+
+    return { event: 'state', data: context.storage === context.ctx.storage };
+  }
+}
+
+async function bootstrapMultiPath(adapter: CloudflareWebSocketAdapter) {
+  const module = await Test.createTestingModule({
+    providers: [MultiPathGateway],
+  }).compile();
+
+  const app = module.createNestApplication();
+
+  app.useLogger(false);
+  app.useWebSocketAdapter(adapter);
+  await app.init();
+
+  return app;
+}
+
+export class GatewayRoom extends CloudflareWebSocketGatewayDurableObject {
+  constructor(ctx: DurableObjectState, bindings: Cloudflare.Env) {
+    const adapter = new CloudflareWebSocketAdapter({
+      messageSerializer: value =>
+        new TextEncoder().encode(JSON.stringify(value)).buffer,
+    });
+
+    super(ctx, bindings, {
+      adapter,
+      paths: ['/ws', '/mobula'],
+      getApplication: () => bootstrapMultiPath(adapter),
+    });
+  }
+
+  protected nonWebSocketFetch(request: Request): Response {
+    return new Response(`custom:${new URL(request.url).pathname}`);
   }
 }
 

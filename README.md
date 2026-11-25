@@ -46,6 +46,23 @@ export default createWorker(bootstrap);
 
 Keep Nest creation inside `bootstrap`. Cloudflare's upload validation runs module initialization without all bindings and disallows I/O and random number generation. Deferring Nest startup to an event avoids those restrictions. Choose HTTP adapters, application options, global guards, pipes, filters, and interceptors in your bootstrap function.
 
+For incremental HTTP migration, pass a native fallback. `fetch` checks the initialized Express route table before dispatch and leaves unmatched request bodies untouched:
+
+```ts
+const worker = createWorker(bootstrap, {
+  fallback: {
+    fetch(request, env, ctx) {
+      return legacyRouter.fetch(request, env, ctx);
+    },
+  },
+  routing: { caseSensitive: true, strict: true },
+});
+
+await worker.matches(request); // true when Nest owns the method and path
+```
+
+Use `around.fetch`, `around.scheduled`, or `around.queue` to wrap complete event dispatch. Each hook receives the native event values and a `next` function. `CloudflareRequestContext` is a singleton provider exported by `CloudflareModule.forRoot()`; inject it to read `getRequest()`, `getEnv()`, and `getExecutionContext()` from the current event.
+
 ## Bindings
 
 `CloudflareModule.forRoot()` registers global providers for the bindings in `cloudflare:workers`' imported `env`. Import it once in the root module. Bindings are injected directly, including primitive variables.
@@ -273,6 +290,54 @@ export class ChatRoom extends CloudflareWebSocketDurableObject<Env> {
 Register the gateway as an application provider. Route upgrade requests to `env.CHAT.get(id).fetch(request)` and configure the Durable Object binding and migration. Gateways use port `0`, the default. Separate listening ports and Socket.IO namespaces are unsupported.
 
 The base class implements `fetch`, `webSocketMessage`, `webSocketClose`, and `webSocketError`. It accepts connections through `ctx.acceptWebSocket` and waits for Nest startup before dispatching events after hibernation. Restored connections are registered with Nest again, so `handleConnection` can run more than once for a socket. Gateways are application singletons; keep persistent room state in Durable Object storage or socket attachments.
+
+For Durable Objects that must keep in-memory sessions, timers, and upstream sockets, use the non-hibernating gateway host. It calls `server.accept()` and keeps each object's sockets isolated:
+
+```ts
+import {
+  ConnectedSocket,
+  SubscribeMessage,
+  WebSocketGateway,
+} from '@nestjs/websockets';
+import {
+  CloudflareWebSocketAdapter,
+  CloudflareWebSocketGatewayDurableObject,
+  getCloudflareWebSocketContext,
+} from 'nestjs-cloudflare/websockets';
+
+@WebSocketGateway({ path: '/ws' })
+@WebSocketGateway({ path: '/mobula' })
+class ApiGateway {
+  @SubscribeMessage('publish')
+  publish(@ConnectedSocket() socket: WebSocket, value: unknown): null {
+    const { sockets } = getCloudflareWebSocketContext(socket);
+    for (const peer of sockets) {
+      peer.send(JSON.stringify(value));
+    }
+    return null;
+  }
+}
+
+const adapter = new CloudflareWebSocketAdapter({
+  messageSerializer: value => JSON.stringify(value),
+});
+
+export class ApiWebSocket extends CloudflareWebSocketGatewayDurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env, {
+      adapter,
+      paths: ['/ws', '/mobula'],
+      getApplication: worker.getApplication,
+    });
+  }
+
+  protected nonWebSocketFetch(request: Request): Response {
+    return new Response(`internal:${new URL(request.url).pathname}`);
+  }
+}
+```
+
+`getCloudflareWebSocketContext(socket)` exposes the owning object's `ctx`, `storage`, `env`, object instance, and in-memory `sockets` set. `messageSerializer` may return a string or `ArrayBuffer`, so binary or protocol-specific frames are supported. The `paths` list lets one Durable Object serve multiple gateway paths; in the example the same gateway handles `/ws` and `/mobula`. Override `nonWebSocketFetch` for the object's other requests.
 
 Clients send `{"event":"echo","data":"hello"}`. The handler receives `data` and its return value is JSON-serialized directly to the client. Promise and observable results are supported. Configure `messageParser` for another wire protocol:
 
