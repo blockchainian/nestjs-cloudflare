@@ -66,6 +66,10 @@ jobs:
         if: steps.version.outputs.published == 'false'
         run: yarn test:types
 
+      - name: Install PostgreSQL for Workerd tests
+        if: steps.version.outputs.published == 'false'
+        run: sudo apt-get install -y --no-install-recommends postgresql
+
       - name: Test
         if: steps.version.outputs.published == 'false'
         run: yarn test

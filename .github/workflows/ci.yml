@@ -18,4 +18,6 @@ jobs:
       - run: yarn build:example
       - run: yarn test:types
       - run: yarn lint
+      - name: Install PostgreSQL for Workerd tests
+        run: sudo apt-get install -y --no-install-recommends postgresql
       - run: yarn test

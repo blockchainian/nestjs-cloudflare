@@ -761,6 +761,8 @@ yarn test
 yarn wrangler dev --config example/wrangler.jsonc --test-scheduled
 ```
 
+TypeORM 端到端测试通过已构建的子导出打包 Worker。请先运行 `yarn build`，并安装带 `initdb` 和 `pg_ctl` 的 PostgreSQL，例如 Homebrew 的 `postgresql@16`。测试会启动并清理独立的临时数据库。
+
 Wrangler runs `yarn build:example` and loads `dist-example/example/index.js`. Local KV, Queues, and Durable Objects need no remote resources. The placeholder KV namespace ID is for local use.
 
 ```sh
