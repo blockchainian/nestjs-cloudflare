@@ -641,6 +641,108 @@ The package installs `DurableObjectContextIdStrategy` globally through `ContextI
 
 Context ownership is weakly keyed by the native `DurableObjectState`, so an evicted activation does not leave an isolate-wide ID cache behind. Hibernation, eviction, or isolate restart creates a new in-memory provider tree; durable providers do not persist sockets, timers, or JavaScript state across those boundaries. Use non-hibernating hosts when upstream sessions must stay in memory, and use Durable Object storage for persistent state. Nest does not run application lifecycle hooks for request-scoped providers; manage object-owned resources explicitly.
 
+## TypeORM 和 Postgres
+
+```sh
+npm install @nestjs/typeorm@12 typeorm@1 pg@8
+```
+
+在 `wrangler.toml` 中启用 `nodejs_compat`，并加入以下配置。别名路径以配置文件所在目录为准。
+
+```toml
+[alias]
+"typeorm" = "./node_modules/typeorm/index.js"
+
+[define]
+"import.meta.url" = "\"file:///index.js\""
+```
+
+Wrangler 默认优先解析 TypeORM 的 browser 入口。该入口的 Postgres 驱动是空壳，别名让 Wrangler 加载 Node 版驱动。`@nestjs/typeorm` 12 在加载时调用 `createRequire(import.meta.url)`，Workers 中 `import.meta.url` 是 `undefined`，需要用 `define` 提供文件 URL。每个 `[env.*]` 都要在对应的 `[env.<name>.define]` 重复设置，环境配置不会继承顶层的 `define`。
+
+根模块注册一次 `CloudflareTypeOrmModule.forRoot`，功能模块继续使用 `TypeOrmModule.forFeature` 和 `@InjectRepository`。`autoLoadEntities: true` 会把功能模块注册的实体加入 DataSource，也可通过 `entities` 显式指定实体。
+
+```ts
+import 'reflect-metadata';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { Controller, Get, Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
+import { CloudflareModule, createWorker } from 'nestjs-cloudflare';
+import { CloudflareTypeOrmModule } from 'nestjs-cloudflare/typeorm';
+import { Pool } from 'pg';
+import { Entity, PrimaryColumn, type Repository } from 'typeorm';
+
+interface Env {
+  POSTGRES: Hyperdrive;
+}
+
+const eventPools = new AsyncLocalStorage<Pool>();
+
+@Entity()
+class Account {
+  @PrimaryColumn('text')
+  id!: string;
+}
+
+@Controller('accounts')
+class Accounts {
+  constructor(
+    @InjectRepository(Account) private readonly rows: Repository<Account>,
+  ) {}
+
+  @Get()
+  list() {
+    return this.rows.find();
+  }
+}
+
+@Module({
+  imports: [TypeOrmModule.forFeature([Account])],
+  controllers: [Accounts],
+})
+class AccountsModule {}
+
+@Module({
+  imports: [
+    CloudflareModule.forRoot(),
+    CloudflareTypeOrmModule.forRoot({
+      pool: () => {
+        const pool = eventPools.getStore();
+        if (!pool) throw new Error('No Postgres pool in the current event');
+        return pool;
+      },
+      autoLoadEntities: true,
+    }),
+    AccountsModule,
+  ],
+})
+class AppModule {}
+
+export default createWorker<Env>(() => NestFactory.create(AppModule), {
+  around: {
+    async fetch(_request, env, _ctx, dispatch) {
+      const pool = new Pool({
+        connectionString: env.POSTGRES.connectionString,
+      });
+
+      return eventPools.run(pool, async () => {
+        try {
+          return await dispatch();
+        } finally {
+          await pool.end();
+        }
+      });
+    },
+  },
+});
+```
+
+DataSource 在应用中共享，查询执行器在第一次查询时从当前事件的池借连接。事务中的查询继续使用同一个连接。事件处理方在数据库操作完成后关闭自己的池。用到数据库的定时事件和队列事件也按同样方式建立池的作用域。
+
+初始化使用预设的 Postgres 元数据。`serverVersion` 默认 `12.0`，供驱动判断是否支持生成列。`searchSchema` 默认 `public`，数据库名用 DataSource 选项里的 `database` 或 `url`，缺省为 `postgres`。连接参数设置在事件的 `pg.Pool` 上。请在 Worker 启动前部署数据库结构，启动时会关闭扩展安装、结构同步和自动迁移。
+
+需要将推断出的列名和关联列名从 camelCase 转成 snake_case 时，从 `nestjs-cloudflare/typeorm` 导入 `SnakeNamingStrategy` 并传入 `namingStrategy: new SnakeNamingStrategy()`。显式指定的列名会保留。
+
 ## Publishing
 
 Change the version in `package.json` and merge the change into `main` to publish automatically. The `publish.yml` workflow skips versions already on npm. For an unpublished version, it installs dependencies with `yarn.lock`, runs `yarn lint`, `yarn test:types`, and `yarn test`, then runs `npm publish --access public`. The `prepublishOnly` script builds the package.
