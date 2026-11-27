@@ -1,21 +1,29 @@
+import 'reflect-metadata';
+
+import { NestFactory } from '@nestjs/core';
 import { DataSource } from 'typeorm';
 import { describe, expect, it } from 'vitest';
 
 import {
-  createDataSourceOptions,
-  initializeDataSource,
-} from '../../src/typeorm/data-source.js';
-import { SnakeNamingStrategy } from '../../src/typeorm/snake-naming.strategy.js';
+  CloudflareTypeOrmModule,
+  type ConnectionPool,
+  SnakeNamingStrategy,
+} from '../../src/typeorm/index.js';
 
-describe('event-scoped PostgreSQL data source', () => {
+function createApplication(connectionPool: () => ConnectionPool) {
+  return NestFactory.createApplicationContext(
+    CloudflareTypeOrmModule.forRoot({ connectionPool }),
+    { abortOnError: false, logger: false },
+  );
+}
+
+describe('event-scoped database data source', () => {
   it('initializes and can open and release an idle runner outside an event', async () => {
-    const dataSource = new DataSource(
-      createDataSourceOptions(() => {
-        throw new Error('There is no active event');
-      }),
-    );
+    const app = await createApplication(() => {
+      throw new Error('There is no active event');
+    });
 
-    await initializeDataSource(dataSource);
+    const dataSource = app.get(DataSource);
 
     try {
       expect(dataSource.isInitialized).toBe(true);
@@ -39,7 +47,7 @@ describe('event-scoped PostgreSQL data source', () => {
       await runner.connect();
       await runner.release();
     } finally {
-      await dataSource.destroy();
+      await app.close();
     }
   });
 
@@ -48,37 +56,35 @@ describe('event-scoped PostgreSQL data source', () => {
     let acquisitions = 0;
     let releases = 0;
 
-    const dataSource = new DataSource(
-      createDataSourceOptions(() => {
-        if (!active) {
-          throw new Error('There is no active event');
-        }
+    const app = await createApplication(() => {
+      if (!active) {
+        throw new Error('There is no active event');
+      }
 
-        return {
-          connect(callback) {
-            acquisitions++;
+      return {
+        connect(callback) {
+          acquisitions++;
 
-            callback(
-              undefined,
-              {
-                async query(_text, parameters) {
-                  return {
-                    command: 'SELECT',
-                    rows: [{ value: parameters?.[0] }],
-                    rowCount: 1,
-                  };
-                },
+          callback(
+            undefined,
+            {
+              async query(_text, parameters) {
+                return {
+                  command: 'SELECT',
+                  rows: [{ value: parameters?.[0] }],
+                  rowCount: 1,
+                };
               },
-              () => {
-                releases++;
-              },
-            );
-          },
-        };
-      }),
-    );
+            },
+            () => {
+              releases++;
+            },
+          );
+        },
+      };
+    });
 
-    await initializeDataSource(dataSource);
+    const dataSource = app.get(DataSource);
 
     const runner = dataSource.createQueryRunner();
 
@@ -106,7 +112,7 @@ describe('event-scoped PostgreSQL data source', () => {
       expect(releases).toBe(1);
     } finally {
       await runner.release();
-      await dataSource.destroy();
+      await app.close();
     }
   });
 });

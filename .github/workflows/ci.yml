@@ -16,8 +16,8 @@ jobs:
       - run: yarn install --frozen-lockfile
       - run: yarn build
       - run: yarn build:example
-      - run: yarn test:types
+      - run: yarn type-check
       - run: yarn lint
-      - name: Install PostgreSQL for Workerd tests
+      - name: Install PostgreSQL
         run: sudo apt-get install -y --no-install-recommends postgresql
       - run: yarn test

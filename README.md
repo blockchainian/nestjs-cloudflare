@@ -673,10 +673,10 @@ import { Pool } from 'pg';
 import { Entity, PrimaryColumn, type Repository } from 'typeorm';
 
 interface Env {
-  POSTGRES: Hyperdrive;
+  DATABASE: Hyperdrive;
 }
 
-const eventPools = new AsyncLocalStorage<Pool>();
+const pools = new AsyncLocalStorage<Pool>();
 
 @Entity()
 class Account {
@@ -706,9 +706,9 @@ class AccountsModule {}
   imports: [
     CloudflareModule.forRoot(),
     CloudflareTypeOrmModule.forRoot({
-      pool: () => {
-        const pool = eventPools.getStore();
-        if (!pool) throw new Error('No Postgres pool in the current event');
+      connectionPool: () => {
+        const pool = pools.getStore();
+        if (!pool) throw new Error('No database pool is active');
         return pool;
       },
       autoLoadEntities: true,
@@ -722,10 +722,10 @@ export default createWorker<Env>(() => NestFactory.create(AppModule), {
   around: {
     async fetch(_request, env, _ctx, dispatch) {
       const pool = new Pool({
-        connectionString: env.POSTGRES.connectionString,
+        connectionString: env.DATABASE.connectionString,
       });
 
-      return eventPools.run(pool, async () => {
+      return pools.run(pool, async () => {
         try {
           return await dispatch();
         } finally {
@@ -745,7 +745,7 @@ DataSource 在应用中共享，查询执行器在第一次查询时从当前事
 
 ## Publishing
 
-Change the version in `package.json` and merge the change into `main` to publish automatically. The `publish.yml` workflow skips versions already on npm. For an unpublished version, it installs dependencies with `yarn.lock`, runs `yarn lint`, `yarn test:types`, and `yarn test`, then runs `npm publish --access public`. The `prepublishOnly` script builds the package.
+Change the version in `package.json` and merge the change into `main` to publish automatically. The `publish.yml` workflow skips versions already on npm. For an unpublished version, it installs dependencies with `yarn.lock`, runs `yarn lint`, `yarn type-check`, and `yarn test`, then runs `npm publish --access public`. The `prepublishOnly` script builds the package.
 
 Configure npm Trusted Publishing for `blockchainian/nestjs-cloudflare` with workflow filename `publish.yml`. Publishing uses GitHub Actions OIDC without npm tokens or secrets. After configuring npm, you can manually run the workflow on `main` to publish the current version.
 

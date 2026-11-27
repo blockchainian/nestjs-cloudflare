@@ -35,7 +35,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "tsc",
     "build:example": "tsc -p tsconfig.example.json",
-    "test:types": "tsc -p tsconfig.test.json",
+    "type-check": "tsc -p tsconfig.test.json",
     "lint": "eslint . && prettier --check .",
     "test": "vitest run",
     "format": "prettier --write .",

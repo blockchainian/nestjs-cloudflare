@@ -19,11 +19,11 @@ import {
 } from 'typeorm';
 
 interface Env {
-  POSTGRES: Hyperdrive;
+  DATABASE: Hyperdrive;
 }
 
-const eventPools = new AsyncLocalStorage<Pool>();
-const rollback = new Error('Roll back the insert');
+const pools = new AsyncLocalStorage<Pool>();
+const rollbackError = new Error('Roll back the insert');
 
 @Entity('entries')
 class Entry {
@@ -58,11 +58,11 @@ class Entries {
 
           if (action === 'rollback') {
             await entries.findOneByOrFail({ id });
-            throw rollback;
+            throw rollbackError;
           }
         });
       } catch (error) {
-        if (error !== rollback) {
+        if (error !== rollbackError) {
           throw error;
         }
       }
@@ -82,11 +82,11 @@ class EntriesModule {}
   imports: [
     CloudflareTypeOrmModule.forRoot({
       autoLoadEntities: true,
-      pool: () => {
-        const pool = eventPools.getStore();
+      connectionPool: () => {
+        const pool = pools.getStore();
 
         if (!pool) {
-          throw new Error('No Postgres pool is active');
+          throw new Error('No database pool is active');
         }
 
         return pool;
@@ -113,7 +113,7 @@ export default {
       return new Response('ready');
     }
 
-    const pool = new Pool({ connectionString: env.POSTGRES.connectionString });
+    const pool = new Pool({ connectionString: env.DATABASE.connectionString });
     let openedConnections = 0;
     let checkedOutConnections = 0;
 
@@ -121,7 +121,7 @@ export default {
       openedConnections++;
     });
 
-    const data = await eventPools.run(pool, async () => {
+    const data = await pools.run(pool, async () => {
       try {
         return await app.get(Entries).execute(action, id);
       } finally {

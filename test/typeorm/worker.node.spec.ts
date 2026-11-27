@@ -127,7 +127,7 @@ describe('TypeORM in a Wrangler-bundled Worker', () => {
         script: await readFile(join(bundleDirectory, 'worker.js'), 'utf8'),
         compatibilityDate: '2026-08-22',
         compatibilityFlags: ['nodejs_compat'],
-        hyperdrives: { POSTGRES: connectionString },
+        hyperdrives: { DATABASE: connectionString },
       }),
     );
 
