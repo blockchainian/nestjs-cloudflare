@@ -17,7 +17,7 @@ function createApplication(connectionPool: () => ConnectionPool) {
   );
 }
 
-describe('event-scoped database data source', () => {
+describe('CloudflareTypeOrmModule', () => {
   it('initializes and can open and release an idle runner outside an event', async () => {
     const app = await createApplication(() => {
       throw new Error('There is no active event');

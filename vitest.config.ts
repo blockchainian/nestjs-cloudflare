@@ -29,6 +29,11 @@ const manualQueueConsumer = buildSync({
   ],
 }).outputFiles[0].text;
 
+const nodeTests = [
+  'test/**/*.node.spec.ts',
+  'test/typeorm/typeorm.module.spec.ts',
+];
+
 const workerd = defineProject({
   plugins: [
     cloudflareTest({
@@ -94,7 +99,7 @@ const workerd = defineProject({
   test: {
     name: 'workerd',
     include: ['test/**/*.spec.ts'],
-    exclude: ['test/**/*.node.spec.ts'],
+    exclude: nodeTests,
     provide: { manualClose: process.env.NCF_MANUAL_CLOSE === '1' },
     setupFiles: ['reflect-metadata'],
   },
@@ -108,7 +113,7 @@ export default defineConfig({
         test: {
           name: 'node',
           environment: 'node',
-          include: ['test/**/*.node.spec.ts'],
+          include: nodeTests,
         },
       },
     ],
