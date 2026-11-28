@@ -64,7 +64,11 @@ jobs:
 
       - name: Check types
         if: steps.version.outputs.published == 'false'
-        run: yarn test:types
+        run: yarn type-check
+
+      - name: Install PostgreSQL
+        if: steps.version.outputs.published == 'false'
+        run: sudo apt-get install -y --no-install-recommends postgresql
 
       - name: Test
         if: steps.version.outputs.published == 'false'

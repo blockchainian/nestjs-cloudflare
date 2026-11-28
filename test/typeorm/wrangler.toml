@@ -1,0 +1,20 @@
+name = "nestjs-cloudflare-typeorm-test"
+main = "worker.ts"
+compatibility_date = "2026-08-22"
+compatibility_flags = ["nodejs_compat"]
+
+[alias]
+"typeorm" = "../../node_modules/typeorm/index.js"
+"class-validator" = "../../example/unsupported-dependency.ts"
+"class-transformer" = "../../example/unsupported-dependency.ts"
+"kafkajs" = "../../example/unsupported-dependency.ts"
+"mqtt" = "../../example/unsupported-dependency.ts"
+"@nats-io/transport-node" = "../../example/unsupported-dependency.ts"
+"ioredis" = "../../example/unsupported-dependency.ts"
+"amqplib" = "../../example/unsupported-dependency.ts"
+"amqp-connection-manager" = "../../example/unsupported-dependency.ts"
+"@grpc/grpc-js" = "../../example/unsupported-dependency.ts"
+"@nestjs/platform-socket.io" = "../../example/unsupported-dependency.ts"
+
+[define]
+"import.meta.url" = "\"file:///index.js\""
