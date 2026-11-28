@@ -18,9 +18,9 @@ function createApplication(connectionPool: () => ConnectionPool) {
 }
 
 describe('CloudflareTypeOrmModule', () => {
-  it('initializes and can open and release an idle runner outside an event', async () => {
+  it('initializes and can open and release an idle runner without an active scoped connection pool', async () => {
     const app = await createApplication(() => {
-      throw new Error('There is no active event');
+      throw new Error('No scoped connection pool is active');
     });
 
     const dataSource = app.get(DataSource);
@@ -52,13 +52,13 @@ describe('CloudflareTypeOrmModule', () => {
   });
 
   it('takes a connection at the first query and releases it with the runner', async () => {
-    let active = false;
+    let scopedConnectionPoolActive = false;
     let acquisitions = 0;
     let releases = 0;
 
     const app = await createApplication(() => {
-      if (!active) {
-        throw new Error('There is no active event');
+      if (!scopedConnectionPoolActive) {
+        throw new Error('No scoped connection pool is active');
       }
 
       return {
@@ -93,7 +93,7 @@ describe('CloudflareTypeOrmModule', () => {
 
       expect(acquisitions).toBe(0);
 
-      active = true;
+      scopedConnectionPoolActive = true;
 
       await expect(runner.query('SELECT $1 AS value', [1])).resolves.toEqual([
         { value: 1 },

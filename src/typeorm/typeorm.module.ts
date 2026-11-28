@@ -10,7 +10,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import type { PostgresDataSourceOptions } from 'typeorm/driver/postgres/PostgresDataSourceOptions.js';
 
-/** Configures an application-wide TypeORM data source backed by event pools. */
+/** Configures an application-wide TypeORM data source backed by scoped connection pools. */
 export interface ScopedDataSourceOptions extends Omit<
   PostgresDataSourceOptions,
   | 'type'
@@ -22,6 +22,7 @@ export interface ScopedDataSourceOptions extends Omit<
   | 'synchronize'
   | 'migrationsRun'
 > {
+  /** Supplies the active scoped connection pool. */
   connectionPool: () => ConnectionPool;
   autoLoadEntities?: boolean;
 
@@ -122,9 +123,9 @@ export interface ConnectionPool {
   ): void;
 }
 
-/** A TypeORM pool whose connections bind to the active event on the first query. */
+/** Takes a connection from the active scoped connection pool on the first query. */
 class ScopedConnectionPool extends EventEmitter {
-  constructor(private readonly pool: () => ConnectionPool) {
+  constructor(private readonly connectionPool: () => ConnectionPool) {
     super();
   }
 
@@ -166,10 +167,11 @@ class ScopedConnectionPool extends EventEmitter {
           }
 
           acquired ??= new Promise((resolve, reject) => {
-            this.pool().connect((error, connection, done) => {
+            this.connectionPool().connect((error, connection, done) => {
               if (error || !connection) {
                 reject(
-                  error ?? new Error('Database pool returned no connection'),
+                  error ??
+                    new Error('Scoped connection pool returned no connection'),
                 );
 
                 return;
@@ -200,7 +202,7 @@ class ScopedConnectionPool extends EventEmitter {
     );
   }
 
-  /** The event owns its pool and closes it separately. */
+  /** The caller owns and closes the scoped connection pool. */
   end(callback: () => void): void {
     callback();
   }

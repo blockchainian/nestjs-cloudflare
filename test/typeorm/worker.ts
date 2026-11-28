@@ -22,7 +22,7 @@ interface Env {
   DATABASE: Hyperdrive;
 }
 
-const pools = new AsyncLocalStorage<Pool>();
+const scopedConnectionPools = new AsyncLocalStorage<Pool>();
 const rollbackError = new Error('Roll back the insert');
 
 @Entity('entries')
@@ -83,13 +83,13 @@ class EntriesModule {}
     CloudflareTypeOrmModule.forRoot({
       autoLoadEntities: true,
       connectionPool: () => {
-        const pool = pools.getStore();
+        const scopedConnectionPool = scopedConnectionPools.getStore();
 
-        if (!pool) {
-          throw new Error('No database pool is active');
+        if (!scopedConnectionPool) {
+          throw new Error('No scoped connection pool is active');
         }
 
-        return pool;
+        return scopedConnectionPool;
       },
     }),
     EntriesModule,
@@ -113,27 +113,35 @@ export default {
       return new Response('ready');
     }
 
-    const pool = new Pool({ connectionString: env.DATABASE.connectionString });
+    const scopedConnectionPool = new Pool({
+      connectionString: env.DATABASE.connectionString,
+    });
+
     let openedConnections = 0;
     let checkedOutConnections = 0;
 
-    pool.on('connect', () => {
+    scopedConnectionPool.on('connect', () => {
       openedConnections++;
     });
 
-    const data = await pools.run(pool, async () => {
-      try {
-        return await app.get(Entries).execute(action, id);
-      } finally {
-        checkedOutConnections = pool.totalCount - pool.idleCount;
-        await pool.end();
-      }
-    });
+    const data = await scopedConnectionPools.run(
+      scopedConnectionPool,
+      async () => {
+        try {
+          return await app.get(Entries).execute(action, id);
+        } finally {
+          checkedOutConnections =
+            scopedConnectionPool.totalCount - scopedConnectionPool.idleCount;
+
+          await scopedConnectionPool.end();
+        }
+      },
+    );
 
     return Response.json(data, {
       headers: {
         'x-checked-out-connections': String(checkedOutConnections),
-        'x-open-connections': String(pool.totalCount),
+        'x-open-connections': String(scopedConnectionPool.totalCount),
         'x-opened-connections': String(openedConnections),
       },
     });

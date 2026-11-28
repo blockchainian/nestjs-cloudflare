@@ -169,7 +169,7 @@ describe('TypeORM in a Wrangler-bundled Worker', () => {
     return JSON.parse(body) as { id: string } | null;
   }
 
-  it('boots the decorated root and resolves its feature repository outside a pool scope', async () => {
+  it('boots the decorated root and resolves its feature repository without an active scoped connection pool', async () => {
     const response = await miniflare!.dispatchFetch(
       'https://worker.test/ready',
     );
@@ -183,7 +183,7 @@ describe('TypeORM in a Wrangler-bundled Worker', () => {
     await expect(query('read', 'serial')).resolves.toEqual({ id: 'serial' });
   });
 
-  it('isolates the pools of ten concurrent requests', async () => {
+  it('isolates the scoped connection pools of ten concurrent requests', async () => {
     const ids = Array.from({ length: 10 }, (_, index) => `concurrent-${index}`);
 
     expect(await Promise.all(ids.map(id => query('insert', id)))).toEqual(

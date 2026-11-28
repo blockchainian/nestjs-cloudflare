@@ -244,7 +244,7 @@ Use `getDurableObjectContextId(ctx)` for direct Nest context resolution. See the
 
 ## TypeORM
 
-Install `@nestjs/typeorm@12`, `typeorm@1`, and `pg@8`. Use `nestjs-cloudflare/typeorm` to share a Postgres DataSource across the application while each event supplies its own connection pool. Create the pool in the event and close it after the event's database work finishes.
+Install `@nestjs/typeorm@12`, `typeorm@1`, and `pg@8`. Use `nestjs-cloudflare/typeorm` to share a Postgres DataSource across the application while each event supplies its own scoped connection pool. Create the pool in the event and close it after the event's database work finishes.
 
 ### Wrangler configuration
 
@@ -261,14 +261,14 @@ Enable `nodejs_compat` and add these entries to `wrangler.toml`.
 - The `typeorm` alias selects the Node entry with the Postgres driver.
 - The `import.meta.url` define gives Nest TypeORM's `createRequire` a file URL. Repeat it in `[env.<name>.define]` for each named environment.
 
-### Module registration and event pools
+### Module registration and scoped connection pools
 
 ```ts
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CloudflareTypeOrmModule } from 'nestjs-cloudflare/typeorm';
 import { Pool } from 'pg';
 
-const pools = new AsyncLocalStorage<Pool>();
+const scopedConnectionPools = new AsyncLocalStorage<Pool>();
 
 @Injectable()
 class Accounts {
@@ -286,9 +286,11 @@ class AccountsModule {}
     CloudflareModule.forRoot(),
     CloudflareTypeOrmModule.forRoot({
       connectionPool: () => {
-        const pool = pools.getStore();
-        if (!pool) throw new Error('No database pool is active');
-        return pool;
+        const scopedConnectionPool = scopedConnectionPools.getStore();
+        if (!scopedConnectionPool) {
+          throw new Error('No scoped connection pool is active');
+        }
+        return scopedConnectionPool;
       },
       autoLoadEntities: true,
     }),
@@ -300,20 +302,20 @@ class AppModule {}
 export default createWorker<Env>(() => NestFactory.create(AppModule), {
   around: {
     async fetch(_request, env, _ctx, next) {
-      const pool = new Pool({
+      const scopedConnectionPool = new Pool({
         connectionString: env.DATABASE.connectionString,
       });
       try {
-        return await pools.run(pool, next);
+        return await scopedConnectionPools.run(scopedConnectionPool, next);
       } finally {
-        await pool.end();
+        await scopedConnectionPool.end();
       }
     },
   },
 });
 ```
 
-Here `Account` is a TypeORM entity and `Env.DATABASE` is a Hyperdrive binding. Use the same pool scope for scheduled and queue handlers that use the database. Apply migrations before starting the Worker. Set `namingStrategy: new SnakeNamingStrategy()` to use snake case for inferred column names. See [TypeORM options](src/typeorm/typeorm.module.ts).
+Here `Account` is a TypeORM entity and `Env.DATABASE` is a Hyperdrive binding. Set up a scoped connection pool the same way in scheduled and queue handlers that use the database. Apply migrations before starting the Worker. Set `namingStrategy: new SnakeNamingStrategy()` to use snake case for inferred column names. See [TypeORM options](src/typeorm/typeorm.module.ts).
 
 ## Local development
 

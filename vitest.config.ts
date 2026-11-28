@@ -32,6 +32,7 @@ const manualQueueConsumer = buildSync({
 const nodeTests = [
   'test/**/*.node.spec.ts',
   'test/typeorm/typeorm.module.spec.ts',
+  'test/typeorm/worker.spec.ts',
 ];
 
 const workerd = defineProject({
